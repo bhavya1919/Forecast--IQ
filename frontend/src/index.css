@@ -1,0 +1,38 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-bg: #F5EFFF;
+    --color-lavender-soft: #E5D9F2;
+    --color-lavender-med: #CDC1FF;
+    --color-lavender-primary: #A294F9;
+    --color-surface: #FFFFFF;
+  }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background-color: #F5EFFF;
+    color: #1F1B2C;
+  }
+
+  h1, h2, h3, h4, h5, h6, .font-heading {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    letter-spacing: -0.015em;
+  }
+}
+
+/* Custom scrollbars and sleek utility animations */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F5EFFF;
+}
+::-webkit-scrollbar-thumb {
+  background: #CDC1FF;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #A294F9;
+}

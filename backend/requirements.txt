@@ -1,0 +1,16 @@
+fastapi==0.141.1
+pydantic==2.13.5
+pydantic-settings==2.15.0
+uvicorn==0.52.4
+python-multipart==0.0.32
+pytest==9.1.1
+pymongo==4.18.2
+pandas==2.3.3
+numpy==2.2.6
+scikit-learn==1.7.2
+statsmodels==0.15.0
+prophet==1.5.0
+lightgbm==4.7.0
+darts==0.47.0
+torch==2.14.0
+pytorch-lightning==2.6.6
