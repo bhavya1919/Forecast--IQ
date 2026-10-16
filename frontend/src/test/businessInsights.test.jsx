@@ -279,5 +279,174 @@ describe('Business Insights & Monitoring UI Engine', () => {
       expect(screen.getByText(name)).toBeInTheDocument();
     });
   });
+
+  it('renders horizon cards with strict window dates and prevents 90D peak from leaking into 28D card', async () => {
+    // 90-day forecast scenario where peak is on 2026-01-24 (day 80)
+    // 7D card peak is on 2025-10-30, 28D card peak is on 2025-11-15
+    const horizonInsights90D = {
+      ...sampleInsightsResponse,
+      horizon: 90,
+      demand_outlook: {
+        ...sampleInsightsResponse.demand_outlook,
+        expected_peak: { value: 25.22, date: '2026-01-24', day_index: 89 },
+        forecast_period: '2025-10-28 to 2026-01-25',
+      },
+      horizon_insights: {
+        '7D': 'Near-term operational demand is projected at an average of 4.2 units/day, with estimated peak of 6.5 units on 2025-10-30 (window: 2025-10-28 to 2025-11-03).',
+        '28D': 'Tactical monthly demand projects 5.1 units/day average, with estimated peak of 8.4 units on 2025-11-15 (window: 2025-10-28 to 2025-11-24).',
+        '90D': 'Quarterly strategic trajectory projects 6.0 units/day average, with estimated peak of 25.22 units on 2026-01-24 (window: 2025-10-28 to 2026-01-25).',
+      },
+    };
+
+    api.getMonitoringFromBackend.mockResolvedValueOnce({
+      dataset_id: 'test-dataset-insights-123',
+      status: 'HEALTHY',
+      is_alert: false,
+      models_tracked: ['LightGBM'],
+    });
+    api.getInsightsFromBackend.mockImplementation(async () => horizonInsights90D);
+
+    render(
+      <BusinessInsightsPage 
+        onNavigate={() => {}} 
+        uploadedDataset={mockUploadedDataset} 
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/7-Day Operational Focus/i)).toBeInTheDocument();
+      expect(screen.getByText(/28-Day Tactical Rebalance/i)).toBeInTheDocument();
+      expect(screen.getByText(/90-Day Strategic Buffer/i)).toBeInTheDocument();
+    });
+
+    // 7D card verification: displays its own peak and date, never 2026-01-24
+    const card7D = screen.getByText(/Near-term operational demand is projected at an average of 4.2 units\/day/i);
+    expect(card7D).toBeInTheDocument();
+    expect(card7D.textContent).toContain('peak of 6.5 units on 2025-10-30');
+    expect(card7D.textContent).not.toContain('2026-01-24');
+    expect(card7D.textContent).not.toContain('25.22');
+
+    // 28D card verification: displays its own peak and date (2025-11-15), NOT 2026-01-24 or 25.22
+    const card28D = screen.getByText(/Tactical monthly demand projects 5.1 units\/day average/i);
+    expect(card28D).toBeInTheDocument();
+    expect(card28D.textContent).toContain('peak of 8.4 units on 2025-11-15');
+    expect(card28D.textContent).toContain('window: 2025-10-28 to 2025-11-24');
+    expect(card28D.textContent).not.toContain('2026-01-24');
+    expect(card28D.textContent).not.toContain('25.22');
+
+    // 90D card verification: contains 25.22 on 2026-01-24
+    const card90D = screen.getByText(/Quarterly strategic trajectory projects 6.0 units\/day average/i);
+    expect(card90D).toBeInTheDocument();
+    expect(card90D.textContent).toContain('peak of 25.22 units on 2026-01-24');
+  });
+
+  it('renders Not Evaluated status badges when horizon is unavailable or not evaluated', async () => {
+    const partialInsights = {
+      ...sampleInsightsResponse,
+      horizon: 7,
+      horizon_insights: {
+        '7D': 'Near-term operational demand is projected at an average of 4.2 units/day, with estimated peak of 6.5 units on 2025-10-30 (window: 2025-10-28 to 2025-11-03).',
+        '28D': 'Not evaluated for 7-day horizon. Switch horizon to 28 Days to generate tactical monthly insights.',
+        '90D': 'Not evaluated (Current forecast is for 7 days; 90-day horizon requires 90D selection and sufficient history).',
+      },
+    };
+
+    api.getMonitoringFromBackend.mockResolvedValueOnce({
+      dataset_id: 'test-dataset-insights-123',
+      status: 'HEALTHY',
+      is_alert: false,
+      models_tracked: ['LightGBM'],
+    });
+    api.getInsightsFromBackend.mockImplementation(async () => partialInsights);
+
+    render(
+      <BusinessInsightsPage 
+        onNavigate={() => {}} 
+        uploadedDataset={mockUploadedDataset} 
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/7-Day Operational Focus/i)).toBeInTheDocument();
+    });
+
+    // 28D and 90D must show Not Evaluated
+    const notEvaluatedBadges = screen.getAllByText(/Not Evaluated/i);
+    expect(notEvaluatedBadges.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('displays accurate series-specific planning window and prevents cross-series leakage', async () => {
+    // When STORE_A_SKU_001 is selected (historical cutoff 2025-11-06), 7D window is 2025-11-07 to 2025-11-13
+    const storeAInsights = {
+      ...sampleInsightsResponse,
+      series_id: 'STORE_A_SKU_001',
+      store_id: 'STORE_A',
+      horizon: 28,
+      scope: {
+        dataset_id: 'test-dataset-insights-123',
+        store_id: 'STORE_A',
+        category: 'Beverages',
+        series_id: 'STORE_A_SKU_001',
+        model: 'automatic',
+        horizon: 28,
+      },
+      demand_outlook: {
+        ...sampleInsightsResponse.demand_outlook,
+        forecast_period: '2025-11-07 to 2025-12-04',
+        expected_peak: { value: 18.5, date: '2025-11-10', day_index: 4 },
+        expected_low: { value: 12.0, date: '2025-11-08', day_index: 2 },
+      },
+      inventory_recommendation: {
+        ...sampleInsightsResponse.inventory_recommendation,
+        planning_period: '2025-11-07 to 2025-12-04',
+        horizon: 28,
+      },
+    };
+
+    api.getExplorerDataFromBackend.mockResolvedValueOnce({
+      dataset_id: 'test-dataset-insights-123',
+      available_filters: {
+        stores: ['STORE_A', 'STORE_B'],
+        categories: ['Beverages'],
+        items: ['SKU_001'],
+        series: ['STORE_A_SKU_001', 'STORE_B_SKU_002'],
+      },
+      dimensions: { has_store: true, has_category: true, has_item: true, has_series: true },
+      scope: {
+        store_id: 'STORE_A',
+        category: 'Beverages',
+        item_id: 'SKU_001',
+        series_id: 'STORE_A_SKU_001',
+      },
+    });
+
+    api.getMonitoringFromBackend.mockResolvedValueOnce({
+      dataset_id: 'test-dataset-insights-123',
+      status: 'HEALTHY',
+      is_alert: false,
+      models_tracked: ['ARIMA'],
+    });
+    api.getInsightsFromBackend.mockResolvedValue(storeAInsights);
+
+    render(
+      <BusinessInsightsPage 
+        onNavigate={() => {}} 
+        uploadedDataset={mockUploadedDataset} 
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Demand Outlook/i)).toBeInTheDocument();
+    });
+
+    // Check forecast period in Demand Outlook and recommendation cards
+    const periodMatches = screen.getAllByText(/2025-11-07 to 2025-12-04/i);
+    expect(periodMatches.length).toBeGreaterThanOrEqual(1);
+    // Peak date must be inside the window
+    expect(screen.getByText(/18.5 units \(2025-11-10\)/i)).toBeInTheDocument();
+    // Trough date must be inside the window
+    expect(screen.getByText(/12 units \(2025-11-08\)/i)).toBeInTheDocument();
+  });
 });
+
 

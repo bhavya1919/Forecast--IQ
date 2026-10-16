@@ -115,9 +115,9 @@ export default function Sidebar({ activeTab, setActiveTab, mobileOpen, setMobile
             <div className="text-[11px] text-[#5F5670] leading-relaxed">
               {uploadedDataset ? (
                 <>
-                  • {uploadedDataset.profile.rowsCount.toLocaleString()} observation rows<br />
-                  • {uploadedDataset.profile.uniqueSeriesCount} unique time series<br />
-                  • Cadence: {uploadedDataset.profile.detectedFrequency}
+                  • {(uploadedDataset.profile?.rowsCount ?? uploadedDataset.cleaning?.raw_rows ?? 0).toLocaleString()} observation rows<br />
+                  • {uploadedDataset.profile?.uniqueSeriesCount ?? 1} unique time series<br />
+                  • Cadence: {uploadedDataset.profile?.detectedFrequency || 'Daily (D)'}
                 </>
               ) : (
                 <>

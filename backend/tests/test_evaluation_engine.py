@@ -578,3 +578,36 @@ def test_sample_weighted_metric_aggregation():
     assert agg_rmse == round(float(np.sqrt(92.5)), 2), f"Expected pooled RMSE, got {agg_rmse}"
 
 
+# 24. 365-day dataset genuine 90-day walk-forward backtest evaluation
+def test_365_day_dataset_90d_walk_forward_backtesting():
+    # 365 observations allows min_train=100 + 2*90 = 280 <= 365 days
+    ds_id = "DS_365_DAYS_SUITE"
+    df = make_backtest_df(n_days=365, series_id="RETAIL_SERIES_1", start_date="2023-01-01")
+    save_dataset(ds_id, df, "01_valid_retail_multiseries.csv")
+
+    suite = BacktestingEngine.run_backtest_suite(
+        dataset_id=ds_id,
+        series_ids=["RETAIL_SERIES_1"],
+        models=["arima", "lightgbm"],
+        horizons=[7, 28, 90],
+        n_folds=2,
+    )
+
+    assert "7D" in suite["horizons_evaluated"]
+    assert "28D" in suite["horizons_evaluated"]
+    assert "90D" in suite["horizons_evaluated"]
+
+    # Verify Table 1 and Table 2 contain genuine finite numerical values for 90D
+    mape_90_arima = suite["table_1_model_x_horizon_mape"]["arima"]["90D"]
+    rmse_90_arima = suite["table_2_model_x_horizon_rmse"]["arima"]["90D"]
+    assert mape_90_arima is not None and isinstance(mape_90_arima, float) and mape_90_arima > 0
+    assert rmse_90_arima is not None and isinstance(rmse_90_arima, float) and rmse_90_arima > 0
+
+    # Best per horizon for 90D must be populated
+    best_90 = suite["best_per_horizon"]["90D"]
+    assert best_90 is not None
+    assert best_90["best_model"] in ["arima", "lightgbm"]
+    assert best_90["mape"] is not None and best_90["mape"] > 0
+
+
+

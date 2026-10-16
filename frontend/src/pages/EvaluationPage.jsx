@@ -118,7 +118,7 @@ export default function EvaluationPage({ _onNavigate, uploadedDataset }) {
     setBacktestError(null);
     try {
       const res = await runBacktestInBackend(uploadedDataset.dataset_id, {
-        horizons: [7, 28],
+        horizons: [7, 28, 90],
         n_folds: 2,
       });
       setEvalData(res);

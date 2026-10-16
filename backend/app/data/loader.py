@@ -100,7 +100,7 @@ def load_csv_from_bytes(file_bytes: bytes, filename: str) -> Tuple[str, pd.DataF
 
 
 def save_dataset(dataset_id: str, df: pd.DataFrame, filename: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-    """Store dataset in in-memory session cache and persist metadata to MongoDB."""
+    """Store dataset in in-memory session cache and persist metadata and data to MongoDB."""
     meta = metadata or {}
     meta["rows"] = len(df)
     meta["columns"] = list(df.columns)
@@ -114,11 +114,36 @@ def save_dataset(dataset_id: str, df: pd.DataFrame, filename: str, metadata: Opt
 
     try:
         from ..db.mongo import MongoRepository
-        MongoRepository.save_dataset_metadata(dataset_id, meta)
+        csv_text = df.to_csv(index=False)
+        MongoRepository.save_dataset_record(dataset_id, meta, csv_text)
     except Exception:
         pass
 
 
 def get_dataset(dataset_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieve stored dataset from in-memory cache."""
-    return DATASET_STORE.get(dataset_id)
+    """
+    Retrieve stored dataset from in-memory cache, or automatically restore
+    from MongoDB persistence if the in-memory cache is empty (e.g. after backend restart).
+    """
+    if dataset_id in DATASET_STORE:
+        return DATASET_STORE[dataset_id]
+
+    try:
+        from ..db.mongo import MongoRepository
+        record = MongoRepository.get_dataset_record(dataset_id)
+        if record:
+            meta, csv_content = record
+            if csv_content:
+                df = pd.read_csv(io.StringIO(csv_content))
+                filename = meta.get("filename", "restored_dataset.csv")
+                entry = {
+                    "df": df,
+                    "filename": filename,
+                    "metadata": meta,
+                }
+                DATASET_STORE[dataset_id] = entry
+                return entry
+    except Exception:
+        pass
+
+    return None

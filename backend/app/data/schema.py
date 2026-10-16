@@ -224,6 +224,14 @@ class CleaningReport(BaseModel):
     outliers_abnormal_count: int
     pipeline_status: PipelineStatus
     summary_notes: List[str] = Field(default_factory=list)
+    # Explicitly defined reconciliation fields
+    raw_row_count: int = 0
+    exact_duplicate_rows_removed: int = 0
+    invalid_date_rows_excluded: int = 0
+    conflicting_observation_groups_resolved: int = 0
+    missing_target_rows_excluded_or_imputed: int = 0
+    cleaned_row_count: int = 0
+    eligible_for_training_row_count: int = 0
 
 
 class SeriesQualityMetrics(BaseModel):
@@ -277,6 +285,9 @@ class SplitReport(BaseModel):
     split_strategy: str
     test_horizon_days: int
     val_horizon_days: int
+    train_row_count: int = 0
+    validation_row_count: int = 0
+    test_row_count: int = 0
 
 
 class CleanDatasetRequest(BaseModel):

@@ -337,19 +337,42 @@ class BusinessInsightEngine:
             ),
         }
 
-        # 10. Horizon-Specific Insights (Strictly scoped to executed horizon length)
+        # 10. Horizon-Specific Insights (Strictly scoped to executed horizon length and sliced per horizon)
+        def _calc_horizon_metrics(slice_len: int):
+            if len(forecast_values) < slice_len:
+                return None
+            vals = forecast_values[:slice_len]
+            dts = dates_list[:slice_len]
+            p_idx = int(np.argmax(vals))
+            l_idx = int(np.argmin(vals))
+            p_date = str(dts[p_idx])[:10] if p_idx < len(dts) else "N/A"
+            l_date = str(dts[l_idx])[:10] if l_idx < len(dts) else "N/A"
+            return {
+                "avg": round(float(np.mean(vals)), 1),
+                "peak_val": round(vals[p_idx], 2),
+                "peak_date": p_date,
+                "low_val": round(vals[l_idx], 2),
+                "low_date": l_date,
+                "start_date": str(dts[0])[:10] if dts else "",
+                "end_date": str(dts[-1])[:10] if dts else "",
+            }
+
+        m_7d = _calc_horizon_metrics(7)
+        m_28d = _calc_horizon_metrics(28)
+        m_90d = _calc_horizon_metrics(90)
+
         horizon_insights = {
             "7D": (
-                f"Near-term operational demand is projected at an average of {round(float(np.mean(forecast_values[:min(7, len(forecast_values))])), 1)} units/day ({expected_change_pct:+.1f}% vs baseline)."
-                if len(forecast_values) >= 7 else "7-day operational projection unavailable."
+                f"Near-term operational demand is projected at an average of {m_7d['avg']} units/day, with estimated peak of {m_7d['peak_val']} units on {m_7d['peak_date']} (window: {m_7d['start_date']} to {m_7d['end_date']})."
+                if m_7d is not None else "7-day operational projection unavailable."
             ),
             "28D": (
-                f"Tactical monthly demand projects {round(float(np.mean(forecast_values[:min(28, len(forecast_values))])), 1)} units/day average, with estimated peak of {expected_peak['value']} units on {expected_peak['date']}."
-                if len(forecast_values) >= 28 else f"Not evaluated for {h}-day horizon. Switch horizon to 28 Days to generate tactical monthly insights."
+                f"Tactical monthly demand projects {m_28d['avg']} units/day average, with estimated peak of {m_28d['peak_val']} units on {m_28d['peak_date']} (window: {m_28d['start_date']} to {m_28d['end_date']})."
+                if m_28d is not None else f"Not evaluated for {h}-day horizon. Switch horizon to 28 Days to generate tactical monthly insights."
             ),
             "90D": (
-                f"Quarterly strategic trajectory projects {round(float(np.mean(forecast_values)), 1)} units/day average across full 90-day window."
-                if len(forecast_values) >= 90 else f"Not evaluated (Current forecast is for {h} days; 90-day horizon requires 90D selection and sufficient history)."
+                f"Quarterly strategic trajectory projects {m_90d['avg']} units/day average, with estimated peak of {m_90d['peak_val']} units on {m_90d['peak_date']} (window: {m_90d['start_date']} to {m_90d['end_date']})."
+                if m_90d is not None else f"Not evaluated (Current forecast is for {h} days; 90-day horizon requires 90D selection and sufficient history)."
             ),
         }
 

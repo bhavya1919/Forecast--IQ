@@ -103,9 +103,10 @@ export default function BusinessInsightsPage({ onNavigate, uploadedDataset }) {
         if (data) {
           // Scope validation: verify response scope matches currently active selection
           if (data.scope) {
-            if (selectedStore && data.scope.store_id && data.scope.store_id !== selectedStore) return;
-            if (selectedCategory && data.scope.category && data.scope.category !== selectedCategory) return;
-            if (selectedSeries && data.scope.series_id && data.scope.series_id !== selectedSeries) return;
+            if (selectedStore && data.scope.store_id && String(data.scope.store_id) !== String(selectedStore)) return;
+            if (selectedCategory && data.scope.category && String(data.scope.category) !== String(selectedCategory)) return;
+            if (selectedItem && data.scope.item_id && String(data.scope.item_id) !== String(selectedItem)) return;
+            if (selectedSeries && data.scope.series_id && String(data.scope.series_id) !== String(selectedSeries)) return;
             if (data.scope.horizon !== selectedHorizon) return;
           }
           setInsightsData(data);
@@ -151,8 +152,20 @@ export default function BusinessInsightsPage({ onNavigate, uploadedDataset }) {
 
       // Verify scope match before rendering
       if (res && res.scope) {
-        if (selectedStore && res.scope.store_id && res.scope.store_id !== selectedStore) {
+        if (selectedStore && res.scope.store_id && String(res.scope.store_id) !== String(selectedStore)) {
           setErrorMsg('Received out-of-order response for previous store.');
+          return;
+        }
+        if (selectedCategory && res.scope.category && String(res.scope.category) !== String(selectedCategory)) {
+          setErrorMsg('Received out-of-order response for previous category.');
+          return;
+        }
+        if (selectedSeries && res.scope.series_id && String(res.scope.series_id) !== String(selectedSeries)) {
+          setErrorMsg('Received out-of-order response for previous series.');
+          return;
+        }
+        if (res.scope.horizon !== selectedHorizon) {
+          setErrorMsg('Received out-of-order response for previous horizon.');
           return;
         }
       }
@@ -667,33 +680,58 @@ export default function BusinessInsightsPage({ onNavigate, uploadedDataset }) {
 
           {/* Horizon Breakdown & Optional Covariates Banner */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <section className="p-5 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] font-bold text-[#8E83A3] uppercase tracking-wider">7-Day Operational Focus</div>
-                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${selectedHorizon >= 7 ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {selectedHorizon >= 7 ? 'Evaluated' : 'Not Evaluated'}
-                </span>
-              </div>
-              <p className="text-xs text-[#5F5670] leading-relaxed">{insightsData.horizon_insights?.['7D'] || 'Short-term tactical execution.'}</p>
-            </section>
-            <section className="p-5 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] font-bold text-[#8E83A3] uppercase tracking-wider">28-Day Tactical Rebalance</div>
-                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${selectedHorizon >= 28 ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
-                  {selectedHorizon >= 28 ? 'Evaluated' : 'Not Evaluated'}
-                </span>
-              </div>
-              <p className="text-xs text-[#5F5670] leading-relaxed">{insightsData.horizon_insights?.['28D'] || 'Monthly distribution cycle.'}</p>
-            </section>
-            <section className="p-5 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] font-bold text-[#8E83A3] uppercase tracking-wider">90-Day Strategic Buffer</div>
-                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${selectedHorizon >= 90 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                  {selectedHorizon >= 90 ? 'Evaluated' : 'Not Evaluated'}
-                </span>
-              </div>
-              <p className="text-xs text-[#5F5670] leading-relaxed">{insightsData.horizon_insights?.['90D'] || 'Quarterly safety buffer.'}</p>
-            </section>
+            {(() => {
+              const is7dEval = Boolean(
+                selectedHorizon >= 7 &&
+                insightsData.horizon_insights?.['7D'] &&
+                !insightsData.horizon_insights['7D'].toLowerCase().includes('unavailable') &&
+                !insightsData.horizon_insights['7D'].toLowerCase().includes('not evaluated')
+              );
+              const is28dEval = Boolean(
+                selectedHorizon >= 28 &&
+                insightsData.horizon_insights?.['28D'] &&
+                !insightsData.horizon_insights['28D'].toLowerCase().includes('not evaluated') &&
+                !insightsData.horizon_insights['28D'].toLowerCase().includes('unavailable')
+              );
+              const is90dEval = Boolean(
+                selectedHorizon >= 90 &&
+                insightsData.horizon_insights?.['90D'] &&
+                !insightsData.horizon_insights['90D'].toLowerCase().includes('not evaluated') &&
+                !insightsData.horizon_insights['90D'].toLowerCase().includes('unavailable')
+              );
+
+              return (
+                <>
+                  <section className="p-5 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-bold text-[#8E83A3] uppercase tracking-wider">7-Day Operational Focus</div>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${is7dEval ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {is7dEval ? 'Evaluated' : 'Not Evaluated'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#5F5670] leading-relaxed">{insightsData.horizon_insights?.['7D'] || 'Short-term tactical execution.'}</p>
+                  </section>
+                  <section className="p-5 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-bold text-[#8E83A3] uppercase tracking-wider">28-Day Tactical Rebalance</div>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${is28dEval ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {is28dEval ? 'Evaluated' : 'Not Evaluated'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#5F5670] leading-relaxed">{insightsData.horizon_insights?.['28D'] || 'Monthly distribution cycle.'}</p>
+                  </section>
+                  <section className="p-5 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-bold text-[#8E83A3] uppercase tracking-wider">90-Day Strategic Buffer</div>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${is90dEval ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                        {is90dEval ? 'Evaluated' : 'Not Evaluated'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-[#5F5670] leading-relaxed">{insightsData.horizon_insights?.['90D'] || 'Quarterly safety buffer.'}</p>
+                  </section>
+                </>
+              );
+            })()}
           </div>
         </div>
       ) : (

@@ -12,7 +12,7 @@ Gracefully handles environments where MongoDB is unreachable or unconfigured,
 falling back without disrupting in-memory or file-based operations.
 """
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 import pymongo
 from pymongo import MongoClient, ASCENDING
@@ -144,6 +144,31 @@ class MongoRepository:
             return False
 
     @staticmethod
+    def save_dataset_record(dataset_id: str, metadata: Dict[str, Any], csv_content: str) -> bool:
+        """Persist dataset metadata and compressed CSV text to MongoDB for durable restoration."""
+        db = MongoManager.get_db()
+        if db is None:
+            return False
+        try:
+            import zlib
+            compressed_bytes = zlib.compress(csv_content.encode("utf-8"), level=6)
+            doc = {
+                "dataset_id": dataset_id,
+                "metadata": metadata,
+                "csv_compressed": compressed_bytes,
+                "updated_at": datetime.utcnow()
+            }
+            db.datasets.update_one(
+                {"dataset_id": dataset_id},
+                {"$set": doc},
+                upsert=True
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Error saving dataset record to MongoDB: {e}")
+            return False
+
+    @staticmethod
     def get_dataset_metadata(dataset_id: str) -> Optional[Dict[str, Any]]:
         db = MongoManager.get_db()
         if db is None:
@@ -155,6 +180,28 @@ class MongoRepository:
             return None
         except Exception as e:
             logger.warning(f"Error fetching dataset metadata from MongoDB: {e}")
+            return None
+
+    @staticmethod
+    def get_dataset_record(dataset_id: str) -> Optional[Tuple[Dict[str, Any], str]]:
+        """Retrieve dataset metadata and decompressed CSV text from MongoDB."""
+        db = MongoManager.get_db()
+        if db is None:
+            return None
+        try:
+            res = db.datasets.find_one({"dataset_id": dataset_id})
+            if not res or "metadata" not in res:
+                return None
+            metadata = res["metadata"]
+            csv_content = ""
+            if "csv_compressed" in res and res["csv_compressed"]:
+                import zlib
+                csv_content = zlib.decompress(res["csv_compressed"]).decode("utf-8")
+            elif "csv_text" in res and res["csv_text"]:
+                csv_content = res["csv_text"]
+            return metadata, csv_content
+        except Exception as e:
+            logger.warning(f"Error fetching dataset record from MongoDB: {e}")
             return None
 
     @staticmethod

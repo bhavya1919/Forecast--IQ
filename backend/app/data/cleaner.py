@@ -62,13 +62,49 @@ def clean_canonical_dataset(
     if exact_duplicates_removed > 0:
         notes.append(f"Removed {exact_duplicates_removed} exact duplicate row(s).")
 
-    # Normalize date
+    # Step 2: Validate and filter unparseable/invalid dates
+    invalid_date_rows_excluded = 0
     if date_col in work_df.columns:
-        work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce")
+        parsed_dates = pd.to_datetime(work_df[date_col], errors="coerce")
+        invalid_mask = parsed_dates.isna()
+        invalid_date_rows_excluded = int(invalid_mask.sum())
+        if invalid_date_rows_excluded > 0:
+            notes.append(f"Excluded {invalid_date_rows_excluded} observation(s) with unparseable or malformed dates.")
+            work_df = work_df.loc[~invalid_mask].copy()
+            parsed_dates = parsed_dates.loc[~invalid_mask]
+        work_df[date_col] = parsed_dates
 
-    # Step 2: Conflicting (series_id, date) resolution
+    # Step 3: Missing Target Audit and Zero Preservation (BEFORE any groupby or aggregation!)
+    missing_targets_found = 0
+    missing_targets_handled = "NONE"
+    missing_target_rows_excluded = 0
+    zero_targets_preserved = 0
+    negative_targets_flagged = 0
+    negative_series_affected: List[str] = []
+
+    if target_col in work_df.columns:
+        # Numeric coercion
+        numeric_target = pd.to_numeric(work_df[target_col], errors="coerce")
+        missing_targets_found = int(numeric_target.isna().sum())
+
+        if missing_targets_found > 0:
+            missing_targets_handled = "EXCLUDED_FROM_TRAINING"
+            missing_target_rows_excluded = missing_targets_found
+            notes.append(f"Excluded {missing_targets_found} missing/non-numeric target observation(s) from model training. Never converted to 0.")
+            work_df = work_df.loc[numeric_target.notna()].copy()
+            numeric_target = numeric_target.loc[numeric_target.notna()]
+
+        work_df[target_col] = numeric_target
+
+        # Count genuine raw zero observations (after removing invalid dates and missing targets, but BEFORE grouping)
+        zero_targets_preserved = int((work_df[target_col] == 0).sum())
+        if zero_targets_preserved > 0:
+            notes.append(f"Preserved {zero_targets_preserved} true zero target observation(s) as valid demand occurrences.")
+
+    # Step 4: Conflicting (series_id, date) resolution
     conflicts_detected = 0
     conflicts_resolved = 0
+    conflicting_observation_groups_resolved = 0
     unresolved_conflicts = 0
     aggregation_rule = "NONE"
 
@@ -79,6 +115,7 @@ def clean_canonical_dataset(
 
         if conflicts_count > 0:
             conflicts_detected = conflicts_count
+            conflicting_groups_count = int(work_df[dup_keys].groupby([series_col, date_col]).ngroups)
             if additive_aggregation and target_type == "additive":
                 aggregation_rule = "SUM(target) + FIRST/TRUE(covariates)"
                 # Define aggregation dictionary
@@ -89,10 +126,8 @@ def clean_canonical_dataset(
                     elif c == target_col:
                         agg_dict[c] = "sum"
                     elif pd.api.types.is_bool_dtype(work_df[c]) or any(k in str(c).lower() for k in ["promo", "holiday"]):
-                        # Boolean or promo/holiday -> max/any (True if any is true)
                         agg_dict[c] = "max"
                     elif pd.api.types.is_numeric_dtype(work_df[c]):
-                        # Price or rate -> mean / first
                         agg_dict[c] = "mean" if "price" in str(c).lower() else "first"
                     else:
                         agg_dict[c] = "first"
@@ -101,44 +136,22 @@ def clean_canonical_dataset(
                 pre_group_len = len(work_df)
                 work_df = work_df.groupby([series_col, date_col], as_index=False).agg(agg_dict)
                 conflicts_resolved = pre_group_len - len(work_df)
-                notes.append(f"Resolved {conflicts_resolved} timestamp conflicts using deterministic additive SUM aggregation.")
+                conflicting_observation_groups_resolved = conflicting_groups_count
+                notes.append(f"Resolved {conflicting_groups_count} conflicting timestamp group(s) ({conflicts_resolved} redundant observations aggregated) using deterministic additive SUM.")
             else:
                 aggregation_rule = "FLAG_FOR_REVIEW"
                 unresolved_conflicts = conflicts_count
                 notes.append(f"Detected {conflicts_count} non-additive conflicts flagged for review.")
 
-    # Step 3: Missing Target Audit and Zero Preservation
-    missing_targets_found = 0
-    missing_targets_handled = "NONE"
-    zero_targets_preserved = 0
-    negative_targets_flagged = 0
-    negative_series_affected: List[str] = []
-
+    # Step 5: Negative targets audit (preserved and flagged for review)
     if target_col in work_df.columns:
-        # Numeric coercion
-        work_df[target_col] = pd.to_numeric(work_df[target_col], errors="coerce")
-        missing_targets_found = int(work_df[target_col].isna().sum())
-
-        if missing_targets_found > 0:
-            # We never silently convert NaN target to 0
-            # Interpolate or forward fill target per series if minimal, or drop rows with missing targets
-            missing_targets_handled = "FILTER_OR_INTERPOLATE_FLAGGED"
-            notes.append(f"Found {missing_targets_found} missing target observation(s). Never silently converted to 0.")
-            # Drop rows with NaN target for clean modeling data, but report it explicitly
-            work_df = work_df.dropna(subset=[target_col])
-
-        zero_targets_preserved = int((work_df[target_col] == 0).sum())
-        if zero_targets_preserved > 0:
-            notes.append(f"Preserved {zero_targets_preserved} true zero target observation(s) as valid demand occurrences.")
-
-        # Negative targets
         neg_mask = work_df[target_col] < 0
         negative_targets_flagged = int(neg_mask.sum())
         if negative_targets_flagged > 0 and series_col in work_df.columns:
             negative_series_affected = list(work_df.loc[neg_mask, series_col].astype(str).unique())
-            notes.append(f"Flagged {negative_targets_flagged} negative target value(s) across series {negative_series_affected}. Preserved for review.")
+            notes.append(f"Flagged {negative_targets_flagged} negative target value(s) across series {negative_series_affected}. Preserved for review; eligible for model training.")
 
-    # Step 4: Optional Features Imputation
+    # Step 6: Optional Features Imputation
     optional_imputations_count = 0
     if impute_optional_features:
         covariate_cols = [c for c in work_df.columns if c not in [date_col, series_col, target_col]]
@@ -147,21 +160,18 @@ def clean_canonical_dataset(
             if n_na > 0:
                 optional_imputations_count += n_na
                 if pd.api.types.is_numeric_dtype(work_df[col]):
-                    # If promo or holiday, fill 0
                     if any(k in str(col).lower() for k in ["promo", "holiday", "event", "is_"]):
                         work_df[col] = work_df[col].fillna(0)
                     else:
-                        # Forward fill then median per series, fallback to global median
                         work_df[col] = work_df[col].ffill().bfill().fillna(0)
                 else:
                     work_df[col] = work_df[col].fillna("Unknown")
         if optional_imputations_count > 0:
             notes.append(f"Deterministically imputed {optional_imputations_count} missing optional covariate value(s).")
 
-    # Step 5: Date Gaps & Cadence
+    # Step 7: Date Gaps & Cadence
     gaps_detected_count = 0
     if series_col in work_df.columns and date_col in work_df.columns:
-        # Sort values chronologically per series
         work_df = work_df.sort_values(by=[series_col, date_col]).reset_index(drop=True)
         for _, s_df in work_df.groupby(series_col):
             if len(s_df) >= 2:
@@ -171,7 +181,7 @@ def clean_canonical_dataset(
         if gaps_detected_count > 0:
             notes.append(f"Detected {gaps_detected_count} temporal date gap(s) exceeding 1 day across series.")
 
-    # Step 6: Outlier Detection with Contextual Cross-Check
+    # Step 8: Outlier Detection with Contextual Cross-Check
     outliers_contextual_count = 0
     outliers_abnormal_count = 0
 
@@ -189,10 +199,8 @@ def clean_canonical_dataset(
         total_outliers = int(outlier_mask.sum())
 
         if total_outliers > 0:
-            # Check for context columns (holiday, promotion, discount)
             context_cols = [c for c in work_df.columns if any(k in str(c).lower() for k in ["holiday", "promo", "event", "discount"])]
             if context_cols:
-                # If any context column is active (non-zero or True)
                 context_active = pd.Series(False, index=work_df.index)
                 for cc in context_cols:
                     context_active = context_active | (work_df[cc].notna() & (work_df[cc] != 0) & (work_df[cc] != False) & (work_df[cc] != ""))
@@ -211,10 +219,13 @@ def clean_canonical_dataset(
     else:
         pipeline_status = PipelineStatus.READY_FOR_MODEL_TRAINING
 
+    cleaned_row_count = len(work_df)
+    eligible_for_training_row_count = cleaned_row_count
+
     cleaning_report = CleaningReport(
         dataset_id=dataset_id,
         original_rows=original_rows,
-        cleaned_rows=len(work_df),
+        cleaned_rows=cleaned_row_count,
         exact_duplicates_removed=exact_duplicates_removed,
         conflicts_detected=conflicts_detected,
         conflicts_resolved=conflicts_resolved,
@@ -231,6 +242,13 @@ def clean_canonical_dataset(
         outliers_abnormal_count=outliers_abnormal_count,
         pipeline_status=pipeline_status,
         summary_notes=notes,
+        raw_row_count=original_rows,
+        exact_duplicate_rows_removed=exact_duplicates_removed,
+        invalid_date_rows_excluded=invalid_date_rows_excluded,
+        conflicting_observation_groups_resolved=conflicting_observation_groups_resolved,
+        missing_target_rows_excluded_or_imputed=missing_target_rows_excluded,
+        cleaned_row_count=cleaned_row_count,
+        eligible_for_training_row_count=eligible_for_training_row_count,
     )
 
     # Save to global cleaned store
@@ -461,6 +479,9 @@ def compute_chronological_splits(
         split_strategy="Strict Chronological Cutoff (Train -> Validation -> Test)",
         test_horizon_days=test_days,
         val_horizon_days=val_days,
+        train_row_count=len(train_df),
+        validation_row_count=len(val_df),
+        test_row_count=len(test_df),
     )
 
 
@@ -559,7 +580,7 @@ def evaluate_dataset_readiness(
         {
             "title": "Target Numerical Validity",
             "passed": val_report.invalid_target_values_count == 0 and bool(custom_mapping.get("target", "")),
-            "detail": f"{profile.target_statistics.count} valid numerical observations ({profile.target_statistics.zero_count} zero sales, {val_report.negative_target_values_count} negative entries)"
+            "detail": f"{profile.target_statistics.count} numerically parseable raw observation(s) ({profile.target_statistics.zero_count} zero sales, {val_report.negative_target_values_count} negative entries flagged for review; non-numeric/missing targets excluded prior to training)"
         },
         {
             "title": "Series Entity Keys Identified",

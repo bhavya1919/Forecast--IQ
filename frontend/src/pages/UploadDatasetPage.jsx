@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Upload, 
   FileText, 
@@ -14,22 +14,36 @@ import {
 import { DEMO_DATASETS } from '../utils/datasetAnalyzer';
 import { uploadDatasetToBackend, remapDatasetInBackend, convertM5SampleInBackend } from '../services/api';
 
-export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
+export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploadedDataset = null, onClearDataset = null }) {
   const [dragActive, setDragActive] = useState(false);
   const [_file, setFile] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
+  const [analysis, setAnalysis] = useState(uploadedDataset);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStep, setAnalysisStep] = useState('');
   const [uploadError, setUploadError] = useState(null);
 
   // Column mapping edit state
   const [customMapping, setCustomMapping] = useState({
-    date: '',
-    series_id: '',
-    target: ''
+    date: uploadedDataset?.mapping?.date || '',
+    series_id: uploadedDataset?.mapping?.series_id || '',
+    target: uploadedDataset?.mapping?.target || ''
   });
 
   const fileInputRef = useRef(null);
+
+  // Synchronize internal state whenever uploadedDataset changes (e.g. restored from backend after refresh)
+  useEffect(() => {
+    if (uploadedDataset) {
+      setAnalysis(uploadedDataset);
+      if (uploadedDataset.mapping) {
+        setCustomMapping({
+          date: uploadedDataset.mapping.date || '',
+          series_id: uploadedDataset.mapping.series_id || '',
+          target: uploadedDataset.mapping.target || ''
+        });
+      }
+    }
+  }, [uploadedDataset]);
 
   // Handle upload directly to backend
   const processCSVUpload = async (filename, fileOrBlob) => {
@@ -155,6 +169,7 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
     setUploadError(null);
     setCustomMapping({ date: '', series_id: '', target: '' });
     if (fileInputRef.current) fileInputRef.current.value = '';
+    if (onClearDataset) onClearDataset();
   };
 
   return (
@@ -498,7 +513,7 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
                   data-testid="map-date-select"
                 >
                   <option value="">-- Select Date Column --</option>
-                  {analysis.profile.headers.map(h => (
+                  {(analysis.profile?.headers || []).map(h => (
                     <option key={h} value={h}>{h}</option>
                   ))}
                 </select>
@@ -520,7 +535,7 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
                   data-testid="map-series-select"
                 >
                   <option value="">-- Select Series ID Column --</option>
-                  {analysis.profile.headers.map(h => (
+                  {(analysis.profile?.headers || []).map(h => (
                     <option key={h} value={h}>{h}</option>
                   ))}
                 </select>
@@ -542,7 +557,7 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
                   data-testid="map-target-select"
                 >
                   <option value="">-- Select Target Column --</option>
-                  {analysis.profile.headers.map(h => (
+                  {(analysis.profile?.headers || []).map(h => (
                     <option key={h} value={h}>{h}</option>
                   ))}
                 </select>
@@ -557,7 +572,7 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
               <div className="text-xs font-bold text-[#1F1B2C] mb-2">
                 Optional Detected Columns & Roles:
               </div>
-              {analysis.mapping.optional.length === 0 ? (
+              {(!analysis.mapping?.optional || analysis.mapping.optional.length === 0) ? (
                 <div className="p-3 rounded-xl bg-gray-50 border border-gray-200 text-xs text-[#5F5670]">
                   No optional columns detected in this CSV. The forecasting models will run using univariate lag features.
                 </div>
@@ -677,8 +692,8 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
                   <div className="p-3 rounded-xl bg-white border border-[#E5D9F2]">
                     <div className="text-[10px] text-[#8E83A3]">Cleaned Records</div>
-                    <div className="font-bold text-[#1F1B2C]">{analysis.cleaning.cleaned_rows}</div>
-                    <div className="text-[9px] text-[#5F5670]">of {analysis.cleaning.original_rows} raw</div>
+                    <div className="font-bold text-[#1F1B2C]" data-testid="cleaned-rows-count">{analysis.cleaning.cleaned_rows}</div>
+                    <div className="text-[9px] text-[#5F5670]">of {analysis.cleaning.original_rows} raw ({analysis.cleaning.eligible_for_training_row_count || analysis.cleaning.cleaned_rows} eligible)</div>
                   </div>
                   <div className="p-3 rounded-xl bg-white border border-[#E5D9F2]">
                     <div className="text-[10px] text-[#8E83A3]">Deduplicated Rows</div>
@@ -693,13 +708,13 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
                   <div className="p-3 rounded-xl bg-white border border-[#E5D9F2]">
                     <div className="text-[10px] text-[#8E83A3]">Zero Sales Kept</div>
                     <div className="font-bold text-[#1F1B2C]">{analysis.cleaning.zero_targets_preserved}</div>
-                    <div className="text-[9px] text-[#5F5670]">never converted to NaN</div>
+                    <div className="text-[9px] text-[#5F5670]">genuine raw zeros preserved</div>
                   </div>
                 </div>
 
-                {analysis.cleaning.summary_notes.length > 0 && (
+                {(analysis.cleaning.summary_notes || []).length > 0 && (
                   <div className="space-y-1.5 pt-1">
-                    {analysis.cleaning.summary_notes.map((note, idx) => (
+                    {(analysis.cleaning.summary_notes || []).map((note, idx) => (
                       <div key={idx} className="p-2.5 rounded-lg bg-[#F5EFFF]/60 text-[11px] text-[#5F5670] flex items-center gap-2 border border-[#CDC1FF]/40">
                         <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                         <span>{note}</span>
@@ -711,55 +726,60 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
             )}
 
             {/* Chronological Train / Val / Test Splits Card */}
-            {analysis.splits && (
+            {analysis.splits && analysis.splits.train && analysis.splits.val && analysis.splits.test && (
               <div className="pt-3 border-t border-[#E5D9F2] space-y-2.5">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
                   <div className="text-xs font-bold text-[#1F1B2C]">
                     Chronological Train / Validation / Test Temporal Splits:
                   </div>
-                  <span className="text-[10px] font-semibold text-[#8E83A3]">
-                    {analysis.splits.split_strategy}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-semibold text-[#8E83A3]">
+                      {analysis.splits.split_strategy}
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800" data-testid="split-reconciliation-total">
+                      Total: {((analysis.splits.train_row_count || analysis.splits.train.rows_count) + (analysis.splits.validation_row_count || analysis.splits.val.rows_count) + (analysis.splits.test_row_count || analysis.splits.test.rows_count))} / {analysis.cleaning?.cleaned_rows || analysis.profile.rowsCount} Cleaned Rows
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                   <div className="p-3 rounded-xl bg-purple-50/60 border border-purple-200">
                     <div className="font-bold text-purple-900">{analysis.splits.train.name}</div>
                     <div className="text-[11px] text-purple-700">{analysis.splits.train.start_date} to {analysis.splits.train.end_date}</div>
-                    <div className="text-[10px] text-purple-600 mt-1">{analysis.splits.train.rows_count} rows ({analysis.splits.train.series_count} series)</div>
+                    <div className="text-[10px] text-purple-600 mt-1" data-testid="split-train-count">{analysis.splits.train_row_count || analysis.splits.train.rows_count} rows ({analysis.splits.train.series_count} series)</div>
                   </div>
                   <div className="p-3 rounded-xl bg-indigo-50/60 border border-indigo-200">
                     <div className="font-bold text-indigo-900">{analysis.splits.val.name}</div>
                     <div className="text-[11px] text-indigo-700">{analysis.splits.val.start_date} to {analysis.splits.val.end_date}</div>
-                    <div className="text-[10px] text-indigo-600 mt-1">{analysis.splits.val.rows_count} rows ({analysis.splits.val.series_count} series)</div>
+                    <div className="text-[10px] text-indigo-600 mt-1" data-testid="split-val-count">{analysis.splits.validation_row_count || analysis.splits.val.rows_count} rows ({analysis.splits.val.series_count} series)</div>
                   </div>
                   <div className="p-3 rounded-xl bg-emerald-50/60 border border-emerald-200">
                     <div className="font-bold text-emerald-900">{analysis.splits.test.name}</div>
                     <div className="text-[11px] text-emerald-700">{analysis.splits.test.start_date} to {analysis.splits.test.end_date}</div>
-                    <div className="text-[10px] text-emerald-600 mt-1">{analysis.splits.test.rows_count} rows ({analysis.splits.test.series_count} series)</div>
+                    <div className="text-[10px] text-emerald-600 mt-1" data-testid="split-test-count">{analysis.splits.test_row_count || analysis.splits.test.rows_count} rows ({analysis.splits.test.series_count} series)</div>
                   </div>
                 </div>
               </div>
             )}
 
             {/* Quality Issues / Warnings Box */}
-            {(analysis.quality.statusIssues.length > 0 || analysis.quality.featureWarnings.length > 0 || analysis.quality.leakageWarnings.length > 0) && (
+            {((analysis.quality?.statusIssues || []).length > 0 || (analysis.quality?.featureWarnings || []).length > 0 || (analysis.quality?.leakageWarnings || []).length > 0) && (
               <div className="space-y-3 pt-2">
-                {analysis.quality.statusIssues.map((issue, idx) => (
+                {(analysis.quality?.statusIssues || []).map((issue, idx) => (
                   <div key={idx} className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs flex items-center gap-2.5">
                     <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
                     <span className="font-semibold">{issue}</span>
                   </div>
                 ))}
 
-                {analysis.quality.featureWarnings.map((warn, idx) => (
+                {(analysis.quality?.featureWarnings || []).map((warn, idx) => (
                   <div key={idx} className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs flex items-center gap-2.5">
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                     <span>{warn}</span>
                   </div>
                 ))}
 
-                {analysis.quality.leakageWarnings.map((leak, idx) => (
+                {(analysis.quality?.leakageWarnings || []).map((leak, idx) => (
                   <div key={idx} className="p-3.5 rounded-xl bg-purple-50 border border-purple-200 text-purple-900 text-xs flex items-center gap-2.5">
                     <Info className="w-4 h-4 text-purple-600 shrink-0" />
                     <span><strong>Data Leakage Alert:</strong> {leak}</span>
@@ -772,90 +792,92 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
 
 
           {/* 4. FORECAST READINESS & HORIZON FEASIBILITY */}
-          <section className="p-6 lg:p-8 rounded-3xl bg-white border border-[#E5D9F2] shadow-xs space-y-6" data-testid="forecast-readiness-section">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wider text-[#8E83A3]">
-                Training Readiness
-              </div>
-              <h2 className="text-xl font-bold font-heading text-[#1F1B2C]">
-                Forecast Readiness & Horizon Feasibility
-              </h2>
-              <p className="text-xs text-[#5F5670]">
-                Pre-flight checklist to verify compatibility with short, medium, and long-term multi-horizon forecasting models.
-              </p>
-            </div>
-
-            {/* Readiness Checklist */}
-            <div className="space-y-2.5">
-              {analysis.readiness.checklist.map((item, i) => (
-                <div key={i} className="p-3.5 rounded-xl bg-[#F5EFFF]/50 border border-[#E5D9F2] flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
-                      item.passed ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'
-                    }`}>
-                      {item.passed ? <Check className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
-                    </div>
-                    <div>
-                      <div className="font-bold text-[#1F1B2C]">{item.title}</div>
-                      <div className="text-[11px] text-[#5F5670]">{item.detail}</div>
-                    </div>
-                  </div>
-
-                  <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
-                    item.passed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                  }`}>
-                    {item.passed ? 'PASSED' : 'REVIEW'}
-                  </span>
+          {analysis.readiness && (
+            <section className="p-6 lg:p-8 rounded-3xl bg-white border border-[#E5D9F2] shadow-xs space-y-6" data-testid="forecast-readiness-section">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wider text-[#8E83A3]">
+                  Training Readiness
                 </div>
-              ))}
-            </div>
+                <h2 className="text-xl font-bold font-heading text-[#1F1B2C]">
+                  Forecast Readiness & Horizon Feasibility
+                </h2>
+                <p className="text-xs text-[#5F5670]">
+                  Pre-flight checklist to verify compatibility with short, medium, and long-term multi-horizon forecasting models.
+                </p>
+              </div>
 
-            {/* Multi-Horizon Feasibility Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-              {Object.values(analysis.readiness.horizons).map((h) => (
-                <div key={h.days} className="p-4 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-[#1F1B2C]">{h.label}</span>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                      h.status === 'Supported' 
-                        ? 'bg-emerald-100 text-emerald-700' 
-                        : 'bg-amber-100 text-amber-700'
+              {/* Readiness Checklist */}
+              <div className="space-y-2.5">
+                {(analysis.readiness.checklist || []).map((item, i) => (
+                  <div key={i} className="p-3.5 rounded-xl bg-[#F5EFFF]/50 border border-[#E5D9F2] flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+                        item.passed ? 'bg-emerald-500 text-white' : 'bg-amber-500 text-white'
+                      }`}>
+                        {item.passed ? <Check className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                      </div>
+                      <div>
+                        <div className="font-bold text-[#1F1B2C]">{item.title}</div>
+                        <div className="text-[11px] text-[#5F5670]">{item.detail}</div>
+                      </div>
+                    </div>
+
+                    <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                      item.passed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                     }`}>
-                      {h.status}
+                      {item.passed ? 'PASSED' : 'REVIEW'}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[#5F5670] leading-relaxed">
-                    {h.note}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {/* Model Compatibility Grid */}
-            <div className="pt-2">
-              <div className="text-xs font-bold text-[#1F1B2C] mb-3">
-                Supported Model Architecture Compatibility:
+                ))}
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {analysis.readiness.models.map((mod, idx) => (
-                  <div key={idx} className="p-3.5 rounded-xl bg-[#F5EFFF]/40 border border-[#E5D9F2] text-xs space-y-1">
+
+              {/* Multi-Horizon Feasibility Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                {Object.values(analysis.readiness.horizons || {}).map((h) => (
+                  <div key={h.days} className="p-4 rounded-2xl bg-white border border-[#E5D9F2] space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-[#1F1B2C]">{mod.model}</span>
-                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
-                        mod.ready ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'
+                      <span className="text-xs font-bold text-[#1F1B2C]">{h.label}</span>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                        h.status === 'Supported' 
+                          ? 'bg-emerald-100 text-emerald-700' 
+                          : 'bg-amber-100 text-amber-700'
                       }`}>
-                        {mod.ready ? 'Compatible' : 'Limited'}
+                        {h.status}
                       </span>
                     </div>
-                    <div className="text-[10px] text-[#A294F9] font-medium">{mod.type}</div>
-                    <p className="text-[10px] text-[#5F5670] leading-snug pt-1">
-                      {mod.requirement}
+                    <p className="text-[11px] text-[#5F5670] leading-relaxed">
+                      {h.note}
                     </p>
                   </div>
                 ))}
               </div>
-            </div>
-          </section>
+
+              {/* Model Compatibility Grid */}
+              <div className="pt-2">
+                <div className="text-xs font-bold text-[#1F1B2C] mb-3">
+                  Supported Model Architecture Compatibility:
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {(analysis.readiness.models || []).map((mod, idx) => (
+                    <div key={idx} className="p-3.5 rounded-xl bg-[#F5EFFF]/40 border border-[#E5D9F2] text-xs space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-[#1F1B2C]">{mod.model}</span>
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${
+                          mod.ready ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'
+                        }`}>
+                          {mod.ready ? 'Compatible' : 'Limited'}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-[#A294F9] font-medium">{mod.type}</div>
+                      <p className="text-[10px] text-[#5F5670] leading-snug pt-1">
+                        {mod.requirement}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
 
           {/* 5. DATA PREVIEW TABLE */}
           <section className="p-6 lg:p-8 rounded-3xl bg-white border border-[#E5D9F2] shadow-xs space-y-4" data-testid="data-preview-section">
@@ -875,7 +897,7 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-[#F5EFFF] text-[#1F1B2C] border-b border-[#E5D9F2]">
-                    {analysis.profile.headers.map(h => {
+                    {(analysis.profile?.headers || []).map(h => {
                       const isMandatory = h === customMapping.date || h === customMapping.series_id || h === customMapping.target;
                       return (
                         <th key={h} className="py-2.5 px-3 font-semibold whitespace-nowrap">
@@ -893,15 +915,22 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady }) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#F5EFFF]">
-                  {analysis.previewRows.map((row, rIdx) => (
+                  {(analysis.previewRows || []).map((row, rIdx) => (
                     <tr key={rIdx} className="hover:bg-[#F5EFFF]/40 font-mono text-[11px]">
-                      {analysis.profile.headers.map((h, cIdx) => (
+                      {(analysis.profile?.headers || []).map((h, cIdx) => (
                         <td key={cIdx} className="py-2 px-3 whitespace-nowrap text-[#5F5670]">
                           {row[h] !== undefined && row[h] !== '' ? row[h] : <span className="text-gray-300 italic">empty</span>}
                         </td>
                       ))}
                     </tr>
                   ))}
+                  {(!analysis.previewRows || analysis.previewRows.length === 0) && (
+                    <tr>
+                      <td colSpan={analysis.profile?.headers?.length || 1} className="py-4 text-center text-xs text-[#5F5670] italic">
+                        Preview rows loaded from backend profile.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

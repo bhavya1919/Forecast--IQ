@@ -351,6 +351,72 @@ def test_forecast_sliced_to_horizon_length():
     assert ins.demand_outlook.expected_low["value"] == 100.0
 
 
+def test_horizon_insights_peak_dates_within_respective_horizons_for_90d_forecast():
+    """
+    Regression: When selected forecast is 90 days, 7D and 28D cards must calculate
+    peak values and dates strictly from their respective 7-day and 28-day slices.
+    A peak occurring on day 80 (e.g. 2026-01-24) must NOT leak into the 7D or 28D cards.
+    """
+    # 90 forecast values: days 1-7 peak at 10.0 (day 3), days 1-28 peak at 15.0 (day 20), day 80 peaks at 25.22
+    values = [5.0] * 90
+    values[2] = 10.0   # day 3 (within 7D)
+    values[19] = 15.0  # day 20 (within 28D)
+    values[79] = 25.22 # day 80 (only in 90D)
+
+    start_date = "2025-10-28"
+    fc = make_fc(values, horizon=90, start_date=start_date)
+    ins = BusinessInsightEngine.generate_insights(fc, make_hist_df(baseline=5.0), BASIC_MAPPING)
+
+    # 1. Main Demand Outlook is 90D: peak is 25.22 on day 80 (2026-01-15)
+    day80_date = (pd.Timestamp(start_date) + pd.Timedelta(days=79)).strftime("%Y-%m-%d")
+    assert ins.demand_outlook.expected_peak["value"] == 25.22
+    assert ins.demand_outlook.expected_peak["date"] == day80_date
+
+    # 2. 7D card must have peak of 10.0 on day 3, NOT 25.22 on day 80
+    day3_date = (pd.Timestamp(start_date) + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+    end_7d_date = (pd.Timestamp(start_date) + pd.Timedelta(days=6)).strftime("%Y-%m-%d")
+    assert "10.0" in ins.horizon_insights["7D"]
+    assert day3_date in ins.horizon_insights["7D"]
+    assert "25.22" not in ins.horizon_insights["7D"]
+    assert day80_date not in ins.horizon_insights["7D"]
+    assert f"window: {start_date} to {end_7d_date}" in ins.horizon_insights["7D"]
+
+    # 3. 28D card must have peak of 15.0 on day 20, NOT 25.22 on day 80
+    day20_date = (pd.Timestamp(start_date) + pd.Timedelta(days=19)).strftime("%Y-%m-%d")
+    end_28d_date = (pd.Timestamp(start_date) + pd.Timedelta(days=27)).strftime("%Y-%m-%d")
+    assert "15.0" in ins.horizon_insights["28D"]
+    assert day20_date in ins.horizon_insights["28D"]
+    assert "25.22" not in ins.horizon_insights["28D"]
+    assert day80_date not in ins.horizon_insights["28D"]
+    assert f"window: {start_date} to {end_28d_date}" in ins.horizon_insights["28D"]
+
+    # 4. 90D card has peak of 25.22 on day 80
+    end_90d_date = (pd.Timestamp(start_date) + pd.Timedelta(days=89)).strftime("%Y-%m-%d")
+    assert "25.22" in ins.horizon_insights["90D"]
+    assert day80_date in ins.horizon_insights["90D"]
+    assert f"window: {start_date} to {end_90d_date}" in ins.horizon_insights["90D"]
+
+
+def test_horizon_insights_when_horizon_is_28d_marks_90d_not_evaluated():
+    values = [5.0] * 28
+    fc = make_fc(values, horizon=28, start_date="2025-10-28")
+    ins = BusinessInsightEngine.generate_insights(fc, make_hist_df(baseline=5.0), BASIC_MAPPING)
+
+    assert "peak of" in ins.horizon_insights["7D"]
+    assert "peak of" in ins.horizon_insights["28D"]
+    assert "Not evaluated" in ins.horizon_insights["90D"]
+
+
+def test_horizon_insights_when_horizon_is_7d_marks_28d_and_90d_not_evaluated():
+    values = [5.0] * 7
+    fc = make_fc(values, horizon=7, start_date="2025-10-28")
+    ins = BusinessInsightEngine.generate_insights(fc, make_hist_df(baseline=5.0), BASIC_MAPPING)
+
+    assert "peak of" in ins.horizon_insights["7D"]
+    assert "Not evaluated" in ins.horizon_insights["28D"]
+    assert "Not evaluated" in ins.horizon_insights["90D"]
+
+
 # ===========================================================================
 # 4. SCOPE & STORE SWITCHING
 # ===========================================================================
@@ -519,4 +585,161 @@ def test_insights_api_endpoint_smoke():
     })
     assert res.status_code == 200, res.text
     assert res.json()["series_id"] == "SERIES_SMOKE"
+
+
+# ===========================================================================
+# 8. REGRESSION TESTS: SERIES-SPECIFIC FORECAST-WINDOW ALIGNMENT & HORIZONS
+# ===========================================================================
+
+def test_series_specific_historical_cutoffs_and_windows_edge_case():
+    """
+    Test that two series in the same dataset with different historical cutoffs
+    generate distinct, non-overlapping out-of-sample forecast windows:
+    - STORE_A_SKU_001 valid target cutoff is 2025-11-06 (NaN target on 2025-11-07 and invalid date).
+      Forecast must start 2025-11-07!
+    - STORE_B_SKU_002 valid target cutoff is 2025-11-08.
+      Forecast must start 2025-11-09!
+    """
+    from app.data.cleaner import clean_canonical_dataset
+    from app.data.loader import detect_candidate_columns
+
+    ds_id = "DS_EDGE_CASE_TEST"
+    # Create raw dataframe mirroring 03_edge_case_retail.csv
+    dates_a = pd.date_range("2025-01-01", "2025-11-06", freq="D")
+    df_a = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in dates_a],
+        "series_id": "STORE_A_SKU_001",
+        "target": np.random.uniform(10, 20, len(dates_a)),
+        "store_id": "STORE_A",
+        "category": "Beverages",
+    })
+    # Add corrupted rows for STORE_A
+    extra_a = pd.DataFrame([
+        {"date": "2025-11-07", "series_id": "STORE_A_SKU_001", "target": np.nan, "store_id": "STORE_A", "category": "Beverages"},
+        {"date": "not-a-date", "series_id": "STORE_A_SKU_001", "target": 15.0, "store_id": "STORE_A", "category": "Beverages"},
+    ])
+
+    dates_b = pd.date_range("2025-01-01", "2025-11-08", freq="D")
+    df_b = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in dates_b],
+        "series_id": "STORE_B_SKU_002",
+        "target": np.random.uniform(20, 30, len(dates_b)),
+        "store_id": "STORE_B",
+        "category": "Snacks",
+    })
+
+    full_df = pd.concat([df_a, extra_a, df_b], ignore_index=True)
+    mapping = detect_candidate_columns(list(full_df.columns))
+    save_dataset(ds_id, full_df, "03_edge_case_retail.csv")
+    clean_canonical_dataset(ds_id, full_df, mapping)
+
+    # 1. Generate 7D insights for STORE_A_SKU_001
+    res_a_7d = client.get(f"/api/insights/{ds_id}/series/STORE_A_SKU_001?horizon=7&model=arima&store_id=STORE_A")
+    assert res_a_7d.status_code == 200, res_a_7d.text
+    data_a = res_a_7d.json()
+
+    outlook_a = data_a["demand_outlook"]
+    # 7D forecast period must be exactly 2025-11-07 to 2025-11-13 (7 future days starting after 2025-11-06)
+    assert outlook_a["forecast_period"] == "2025-11-07 to 2025-11-13"
+    assert data_a["inventory_recommendation"]["planning_period"] == "2025-11-07 to 2025-11-13"
+    assert data_a["staffing_recommendation"]["planning_period"] == "2025-11-07 to 2025-11-13"
+    assert data_a["procurement_recommendation"]["planning_period"] == "2025-11-07 to 2025-11-13"
+    # Peak and trough dates must belong strictly to this window
+    assert "2025-11-07" <= outlook_a["expected_peak"]["date"] <= "2025-11-13"
+    assert "2025-11-07" <= outlook_a["expected_low"]["date"] <= "2025-11-13"
+
+    # 2. Generate 7D insights for STORE_B_SKU_002
+    res_b_7d = client.get(f"/api/insights/{ds_id}/series/STORE_B_SKU_002?horizon=7&model=arima&store_id=STORE_B")
+    assert res_b_7d.status_code == 200, res_b_7d.text
+    data_b = res_b_7d.json()
+
+    outlook_b = data_b["demand_outlook"]
+    # 7D forecast period must be exactly 2025-11-09 to 2025-11-15 (7 future days starting after 2025-11-08)
+    assert outlook_b["forecast_period"] == "2025-11-09 to 2025-11-15"
+    assert "2025-11-09" <= outlook_b["expected_peak"]["date"] <= "2025-11-15"
+    assert "2025-11-09" <= outlook_b["expected_low"]["date"] <= "2025-11-15"
+
+
+def test_forecast_horizons_7d_28d_90d_counts_and_boundaries():
+    """
+    Test 7D, 28D, and 90D horizons for exact timestamp count and boundary dates.
+    For latest valid date 2025-11-08:
+    - 7D: 2025-11-09 through 2025-11-15 (7 days)
+    - 28D: 2025-11-09 through 2025-12-06 (28 days)
+    - 90D: 2025-11-09 through 2026-02-06 (90 days)
+    """
+    from app.data.cleaner import clean_canonical_dataset
+    from app.data.loader import detect_candidate_columns
+
+    ds_id = "DS_HORIZONS_BOUNDARY_TEST"
+    dates = pd.date_range("2025-01-01", "2025-11-08", freq="D")
+    df = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in dates],
+        "series_id": "SERIES_CUTOFF_TEST",
+        "target": np.random.uniform(10, 20, len(dates)),
+    })
+    mapping = detect_candidate_columns(list(df.columns))
+    save_dataset(ds_id, df, "horizon_test.csv")
+    clean_canonical_dataset(ds_id, df, mapping)
+
+    # Test 7D
+    res7 = client.post("/api/insights/generate", json={
+        "dataset_id": ds_id, "series_id": "SERIES_CUTOFF_TEST", "model": "arima", "horizon": 7
+    })
+    assert res7.status_code == 200
+    d7 = res7.json()
+    assert d7["demand_outlook"]["forecast_period"] == "2025-11-09 to 2025-11-15"
+    assert "2025-11-09" <= d7["demand_outlook"]["expected_peak"]["date"] <= "2025-11-15"
+    assert "2025-11-09" <= d7["demand_outlook"]["expected_low"]["date"] <= "2025-11-15"
+
+    # Test 28D
+    res28 = client.post("/api/insights/generate", json={
+        "dataset_id": ds_id, "series_id": "SERIES_CUTOFF_TEST", "model": "arima", "horizon": 28
+    })
+    assert res28.status_code == 200
+    d28 = res28.json()
+    assert d28["demand_outlook"]["forecast_period"] == "2025-11-09 to 2025-12-06"
+    assert "2025-11-09" <= d28["demand_outlook"]["expected_peak"]["date"] <= "2025-12-06"
+    assert "2025-11-09" <= d28["demand_outlook"]["expected_low"]["date"] <= "2025-12-06"
+
+    # Test 90D
+    res90 = client.post("/api/insights/generate", json={
+        "dataset_id": ds_id, "series_id": "SERIES_CUTOFF_TEST", "model": "arima", "horizon": 90
+    })
+    assert res90.status_code == 200
+    d90 = res90.json()
+    assert d90["demand_outlook"]["forecast_period"] == "2025-11-09 to 2026-02-06"
+    assert "2025-11-09" <= d90["demand_outlook"]["expected_peak"]["date"] <= "2026-02-06"
+    assert "2025-11-09" <= d90["demand_outlook"]["expected_low"]["date"] <= "2026-02-06"
+
+
+def test_forecast_no_overlap_with_historical_dates():
+    """Ensure no forecast dates overlap with any training observation dates."""
+    from app.data.cleaner import clean_canonical_dataset
+    from app.data.loader import detect_candidate_columns
+
+    ds_id = "DS_NO_OVERLAP_TEST"
+    dates = pd.date_range("2025-01-01", "2025-05-31", freq="D")
+    hist_date_strs = set([d.strftime("%Y-%m-%d") for d in dates])
+    df = pd.DataFrame({
+        "date": [d.strftime("%Y-%m-%d") for d in dates],
+        "series_id": "SERIES_OVERLAP_TEST",
+        "target": np.random.uniform(50, 60, len(dates)),
+    })
+    mapping = detect_candidate_columns(list(df.columns))
+    save_dataset(ds_id, df, "overlap_test.csv")
+    clean_canonical_dataset(ds_id, df, mapping)
+
+    res = client.post("/api/forecast/generate", json={
+        "dataset_id": ds_id, "series_id": "SERIES_OVERLAP_TEST", "model": "arima", "horizon": 28
+    })
+    assert res.status_code == 200
+    fc_dates = res.json()["dates"]
+    assert len(fc_dates) == 28
+    # Zero intersection with history
+    assert len(set(fc_dates).intersection(hist_date_strs)) == 0
+    # First forecast date is strictly the day after the last history date (2025-06-01)
+    assert fc_dates[0] == "2025-06-01"
+    assert fc_dates[-1] == "2025-06-28"
+
 

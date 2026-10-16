@@ -49,11 +49,14 @@ export async function uploadDatasetToBackend(fileOrBlob, filename = 'dataset.csv
   const isDirect = uploadRes.url && uploadRes.url.includes(':8000');
   const baseUrl = isDirect ? 'http://localhost:8000/api' : API_BASE;
 
-  // Run initial cleaning and fetch all Phase 3 reports in parallel
-  const [readinessRes, previewRes, cleaningRes, qualityRes, splitsRes] = await Promise.all([
+  // Run initial cleaning first, then fetch dependent reports
+  const [readinessRes, previewRes, cleaningRes] = await Promise.all([
     fetch(`${baseUrl}/data/${datasetId}/readiness`),
     fetch(`${baseUrl}/data/${datasetId}/preview`),
     fetch(`${baseUrl}/data/${datasetId}/clean`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ additive_aggregation: true }) }).catch(() => null),
+  ]);
+
+  const [qualityRes, splitsRes] = await Promise.all([
     fetch(`${baseUrl}/data/${datasetId}/series-quality`).catch(() => null),
     fetch(`${baseUrl}/data/${datasetId}/splits?test_horizon=28&val_horizon=14`).catch(() => null),
   ]);
@@ -108,10 +111,13 @@ export async function convertM5SampleInBackend(maxSeries = 3, maxDays = 194) {
   const isDirect = convRes.url && convRes.url.includes(':8000');
   const baseUrl = isDirect ? 'http://localhost:8000/api' : API_BASE;
 
-  const [readinessRes, previewRes, cleaningRes, qualityRes, splitsRes] = await Promise.all([
+  const [readinessRes, previewRes, cleaningRes] = await Promise.all([
     fetch(`${baseUrl}/data/${datasetId}/readiness`),
     fetch(`${baseUrl}/data/${datasetId}/preview`),
     fetch(`${baseUrl}/data/${datasetId}/clean`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ additive_aggregation: true }) }).catch(() => null),
+  ]);
+
+  const [qualityRes, splitsRes] = await Promise.all([
     fetch(`${baseUrl}/data/${datasetId}/series-quality`).catch(() => null),
     fetch(`${baseUrl}/data/${datasetId}/splits?test_horizon=28&val_horizon=14`).catch(() => null),
   ]);
@@ -183,6 +189,63 @@ export async function remapDatasetInBackend(datasetId, mapping) {
   const splitsData = splitsRes && splitsRes.ok ? await splitsRes.json() : null;
 
   return formatBackendReportToUI(readinessData, null, cleaningData, qualityData, splitsData);
+}
+
+/**
+ * Retrieve and reconstruct full dataset state and audit reports from backend by dataset ID.
+ * Used for application restoration after browser refresh.
+ */
+export async function restoreDatasetFromBackend(datasetId) {
+  let readinessRes;
+  let baseUrl = API_BASE;
+  try {
+    readinessRes = await fetch(`${API_BASE}/data/${datasetId}/readiness`);
+    baseUrl = API_BASE;
+  } catch {
+    // Vite proxy might not be ready or direct call needed
+    try {
+      baseUrl = 'http://localhost:8000/api';
+      readinessRes = await fetch(`http://localhost:8000/api/data/${datasetId}/readiness`);
+    } catch {
+      throw new Error('Backend Service Unavailable: Could not connect to backend server.');
+    }
+  }
+
+  if (readinessRes.status === 404) {
+    throw new Error(`Dataset '${datasetId}' not found on backend.`);
+  }
+
+  if (!readinessRes.ok) {
+    const errData = await readinessRes.json().catch(() => ({ detail: readinessRes.statusText }));
+    throw new Error(errData.detail || `Dataset restoration failed with HTTP ${readinessRes.status}`);
+  }
+
+  const readinessData = await readinessRes.json();
+
+  const [previewRes, cleaningRes] = await Promise.all([
+    fetch(`${baseUrl}/data/${datasetId}/preview`).catch(() => null),
+    fetch(`${baseUrl}/data/${datasetId}/clean`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ additive_aggregation: true }),
+    }).catch(() => null),
+  ]);
+
+  const [qualityRes, splitsRes] = await Promise.all([
+    fetch(`${baseUrl}/data/${datasetId}/series-quality`).catch(() => null),
+    fetch(`${baseUrl}/data/${datasetId}/splits?test_horizon=28&val_horizon=14`).catch(() => null),
+  ]);
+
+  let previewData = { headers: [], rows: [] };
+  if (previewRes && previewRes.ok) {
+    previewData = await previewRes.json();
+  }
+
+  const cleaningData = cleaningRes && cleaningRes.ok ? await cleaningRes.json() : null;
+  const qualityData = qualityRes && qualityRes.ok ? await qualityRes.json() : null;
+  const splitsData = splitsRes && splitsRes.ok ? await splitsRes.json() : null;
+
+  return formatBackendReportToUI(readinessData, previewData, cleaningData, qualityData, splitsData);
 }
 
 /**
@@ -275,6 +338,13 @@ function formatBackendReportToUI(report, previewData, cleaningData, qualityData,
       outliers_abnormal_count: 0,
       pipeline_status: pipelineStatus,
       summary_notes: [],
+      raw_row_count: prof.rows_count,
+      exact_duplicate_rows_removed: prof.duplicate_rows_count,
+      invalid_date_rows_excluded: 0,
+      conflicting_observation_groups_resolved: 0,
+      missing_target_rows_excluded_or_imputed: 0,
+      cleaned_row_count: prof.rows_count,
+      eligible_for_training_row_count: prof.rows_count,
     },
     seriesQuality: qualityData || null,
     splits: splitsData || null,
@@ -360,7 +430,7 @@ export async function runBacktestInBackend(datasetId, options = {}, signal = nul
     category: options.category || null,
     item_id: options.item_id || null,
     models: options.models || null,
-    horizons: options.horizons || [7, 28],
+    horizons: options.horizons || [7, 28, 90],
     n_folds: options.n_folds || 2,
   };
 

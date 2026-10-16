@@ -310,7 +310,7 @@ class BacktestingEngine:
         # Default to all six architectures. Callers should pass an explicit
         # subset for cheap development runs; the engine never trains every series.
         target_models = models or ["arima", "sarima", "prophet", "lightgbm", "deepar", "tft"]
-        target_horizons = horizons or [7, 28]
+        target_horizons = horizons or [7, 28, 90]
 
         start_time = time.time()
         series_evaluations: List[Dict[str, Any]] = []

@@ -34,6 +34,16 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
 
   const abortControllerRef = useRef(null);
 
+  // Reset all filters and evaluation data when switching datasets
+  useEffect(() => {
+    setFilterStore('');
+    setFilterCategory('');
+    setFilterProduct('');
+    setFilterSeries('');
+    setFilterHorizon('all');
+    setEvalData(null);
+  }, [uploadedDataset?.dataset_id]);
+
   // Discover dynamic available filters for the active dataset
   useEffect(() => {
     if (!uploadedDataset?.dataset_id) return;
@@ -200,6 +210,39 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
     }
   ] : (uploadedDataset ? null : BENCHMARK_METRICS);
 
+  // Calculate empirical best models for the active scope directly from displayedMetrics
+  const isMapeMode = activeMetricTab === 'mape';
+  const metricUnitSuffix = isMapeMode ? '% MAPE' : ' RMSE';
+
+  const findBestForHorizon = (field) => {
+    if (!displayedMetrics || displayedMetrics.length === 0) return null;
+    const evaluated = displayedMetrics.filter(m => typeof m[field] === 'number');
+    if (evaluated.length === 0) return null;
+    return evaluated.reduce((prev, curr) => (curr[field] < prev[field] ? curr : prev));
+  };
+
+  const scopeBest7 = findBestForHorizon(isMapeMode ? 'mape7' : 'rmse7');
+  const scopeBest28 = findBestForHorizon(isMapeMode ? 'mape28' : 'rmse28');
+  const _scopeBest90 = findBestForHorizon(isMapeMode ? 'mape90' : 'rmse90');
+
+  // Scope best overall (lowest average error across all evaluated horizons for each model)
+  const scopeBestOverall = (() => {
+    if (!displayedMetrics || displayedMetrics.length === 0) return null;
+    const modelScores = [];
+    displayedMetrics.forEach(m => {
+      const v7 = isMapeMode ? m.mape7 : m.rmse7;
+      const v28 = isMapeMode ? m.mape28 : m.rmse28;
+      const v90 = isMapeMode ? m.mape90 : m.rmse90;
+      const valid = [v7, v28, v90].filter(v => typeof v === 'number');
+      if (valid.length > 0) {
+        const avg = valid.reduce((a, b) => a + b, 0) / valid.length;
+        modelScores.push({ model: m.name, modelId: m.modelId, avg: Math.round(avg * 100) / 100, count: valid.length });
+      }
+    });
+    if (modelScores.length === 0) return null;
+    return modelScores.reduce((prev, curr) => (curr.avg < prev.avg ? curr : prev));
+  })();
+
   return (
     <div className="space-y-8 max-w-7xl mx-auto pb-12">
       {/* Header */}
@@ -276,10 +319,10 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                   Best 7D Model (Short-term)
                 </div>
                 <div className="text-sm font-bold text-[#1F1B2C] flex items-center justify-between">
-                  <span>{evalData.best_per_horizon?.['7D']?.best_model?.toUpperCase() || 'N/A'}</span>
-                  {evalData.best_per_horizon?.['7D']?.mape !== null && (
+                  <span>{scopeBest7 ? scopeBest7.name.toUpperCase() : (evalData.best_per_horizon?.['7D']?.best_model?.toUpperCase() || 'N/A')}</span>
+                  {(scopeBest7 ? (isMapeMode ? scopeBest7.mape7 : scopeBest7.rmse7) : (isMapeMode ? evalData.best_per_horizon?.['7D']?.mape : evalData.best_per_horizon?.['7D']?.rmse)) !== null && (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
-                      {evalData.best_per_horizon?.['7D']?.mape}% MAPE
+                      {scopeBest7 ? (isMapeMode ? scopeBest7.mape7 : scopeBest7.rmse7) : (isMapeMode ? evalData.best_per_horizon?.['7D']?.mape : evalData.best_per_horizon?.['7D']?.rmse)}{metricUnitSuffix}
                     </span>
                   )}
                 </div>
@@ -295,10 +338,10 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                   Best 28D Model (Medium-term)
                 </div>
                 <div className="text-sm font-bold text-[#1F1B2C] flex items-center justify-between">
-                  <span>{evalData.best_per_horizon?.['28D']?.best_model?.toUpperCase() || 'N/A'}</span>
-                  {evalData.best_per_horizon?.['28D']?.mape !== null && (
+                  <span>{scopeBest28 ? scopeBest28.name.toUpperCase() : (evalData.best_per_horizon?.['28D']?.best_model?.toUpperCase() || 'N/A')}</span>
+                  {(scopeBest28 ? (isMapeMode ? scopeBest28.mape28 : scopeBest28.rmse28) : (isMapeMode ? evalData.best_per_horizon?.['28D']?.mape : evalData.best_per_horizon?.['28D']?.rmse)) !== null && (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
-                      {evalData.best_per_horizon?.['28D']?.mape}% MAPE
+                      {scopeBest28 ? (isMapeMode ? scopeBest28.mape28 : scopeBest28.rmse28) : (isMapeMode ? evalData.best_per_horizon?.['28D']?.mape : evalData.best_per_horizon?.['28D']?.rmse)}{metricUnitSuffix}
                     </span>
                   )}
                 </div>
@@ -314,12 +357,16 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                   Best Overall Across Horizons
                 </div>
                 <div className="text-sm font-bold text-[#A294F9] flex items-center justify-between">
-                  <span>{evalData.best_model_overall?.model?.toUpperCase() || 'N/A'}</span>
-                  {evalData.best_model_overall?.overall_mape !== undefined && (
+                  <span>{scopeBestOverall ? scopeBestOverall.model.toUpperCase() : (evalData.best_model_overall?.model?.toUpperCase() || 'N/A')}</span>
+                  {scopeBestOverall ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-[#E5D9F2] text-[#1F1B2C] font-semibold">
+                      Avg {scopeBestOverall.avg}{metricUnitSuffix}
+                    </span>
+                  ) : (evalData.best_model_overall?.overall_mape !== undefined && (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-[#E5D9F2] text-[#1F1B2C] font-semibold">
                       Avg {evalData.best_model_overall?.overall_mape}% MAPE
                     </span>
-                  )}
+                  ))}
                 </div>
                 <div className="text-[10px] text-[#5F5670]">
                   {(() => {
@@ -640,33 +687,42 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
 
           {/* Visualizations Section */}
           {(() => {
-            // Check evaluated status across horizons
+            const isMape = activeMetricTab === 'mape';
+            const metricSuffix = isMape ? '%' : '';
+
+            // Check evaluated status across horizons for the active metric
             const is90DEvaluated = displayedMetrics.some(m => {
-              const v = activeMetricTab === 'mape' ? m.mape90 : m.rmse90;
+              const v = isMape ? m.mape90 : m.rmse90;
               return typeof v === 'number';
             });
-            const is90DMapeEvaluated = displayedMetrics.some(m => typeof m.mape90 === 'number');
 
             // Dynamic Y-axis scale calculation for Bar Chart
             const validBarValues = displayedMetrics.flatMap(m => {
-              const vals = activeMetricTab === 'mape' 
+              const vals = isMape 
                 ? [m.mape7, m.mape28, m.mape90] 
                 : [m.rmse7, m.rmse28, m.rmse90];
               return vals.filter(v => typeof v === 'number');
             });
             const rawMaxBar = validBarValues.length > 0 ? Math.max(...validBarValues) : 25;
-            const maxBar = Math.max(25, Math.ceil((rawMaxBar * 1.15) / 5) * 5);
+            const maxBar = Math.max(isMape ? 25 : 2, Math.ceil((rawMaxBar * 1.15) / (isMape ? 5 : 1)) * (isMape ? 5 : 1));
             const barStep = maxBar / 5;
-            const barTicks = [0, barStep, barStep * 2, barStep * 3, barStep * 4, maxBar].map(v => Math.round(v));
+            const barTicks = [0, barStep, barStep * 2, barStep * 3, barStep * 4, maxBar].map(v => 
+              isMape ? Math.round(v) : (Math.round(v * 10) / 10)
+            );
 
             // Dynamic Y-axis scale calculation for Line Chart (Degradation Curve)
-            const validLineValues = displayedMetrics.flatMap(m => 
-              [m.mape7, m.mape28, m.mape90].filter(v => typeof v === 'number')
-            );
+            const validLineValues = displayedMetrics.flatMap(m => {
+              const vals = isMape
+                ? [m.mape7, m.mape28, m.mape90]
+                : [m.rmse7, m.rmse28, m.rmse90];
+              return vals.filter(v => typeof v === 'number');
+            });
             const rawMaxLine = validLineValues.length > 0 ? Math.max(...validLineValues) : 25;
-            const maxLine = Math.max(25, Math.ceil((rawMaxLine * 1.15) / 5) * 5);
+            const maxLine = Math.max(isMape ? 25 : 2, Math.ceil((rawMaxLine * 1.15) / (isMape ? 5 : 1)) * (isMape ? 5 : 1));
             const lineStep = maxLine / 5;
-            const lineTicks = [0, lineStep, lineStep * 2, lineStep * 3, lineStep * 4, maxLine].map(v => Math.round(v));
+            const lineTicks = [0, lineStep, lineStep * 2, lineStep * 3, lineStep * 4, maxLine].map(v => 
+              isMape ? Math.round(v) : (Math.round(v * 10) / 10)
+            );
 
             const MODEL_COLORS = {
               lightgbm: '#059669', // Emerald
@@ -677,6 +733,19 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
               deepar: '#4F46E5',   // Indigo
             };
 
+            // Empirical best models for active metric derived from the SAME displayedMetrics scope
+            const best7Model = scopeBest7 ? scopeBest7.name : evalData?.best_per_horizon?.['7D']?.best_model;
+            const best7Value = scopeBest7 
+              ? (isMape ? scopeBest7.mape7 : scopeBest7.rmse7)
+              : (isMape ? evalData?.best_per_horizon?.['7D']?.mape : evalData?.best_per_horizon?.['7D']?.rmse);
+            const best28Model = scopeBest28 ? scopeBest28.name : evalData?.best_per_horizon?.['28D']?.best_model;
+            const best28Value = scopeBest28 
+              ? (isMape ? scopeBest28.mape28 : scopeBest28.rmse28)
+              : (isMape ? evalData?.best_per_horizon?.['28D']?.mape : evalData?.best_per_horizon?.['28D']?.rmse);
+
+            const color7 = (scopeBest7 && MODEL_COLORS[scopeBest7.modelId]) || '#059669';
+            const color28 = (scopeBest28 && MODEL_COLORS[scopeBest28.modelId]) || '#2563EB';
+
             return (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <section className="p-6 rounded-3xl bg-white border border-[#E5D9F2] shadow-xs space-y-4">
@@ -686,7 +755,7 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                     </div>
                     <div className="flex items-center justify-between">
                       <h3 className="text-lg font-bold font-heading text-[#1F1B2C]">
-                        {activeMetricTab === 'mape' ? 'MAPE Error Comparison' : 'RMSE Error Comparison'}
+                        {isMape ? 'MAPE Error Comparison' : 'RMSE Error Comparison'}
                       </h3>
                       {!is90DEvaluated && (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
@@ -695,7 +764,7 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                       )}
                     </div>
                     <p className="text-xs text-[#5F5670]">
-                      Bar grouping across 7D (short), 28D (medium), and 90D (long) horizons.
+                      Bar grouping across 7D (short), 28D (medium), and 90D (long) horizons ({isMape ? 'Percentage Error' : 'Demand Units'}).
                     </p>
                   </div>
 
@@ -706,16 +775,16 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                         return (
                           <g key={v}>
                             <line x1="40" y1={y} x2="480" y2={y} stroke="#E5D9F2" strokeDasharray="3 3" />
-                            <text x="32" y={y + 3} textAnchor="end" className="text-[9px] fill-[#8E83A3] font-medium">{v}</text>
+                            <text x="32" y={y + 3} textAnchor="end" className="text-[9px] fill-[#8E83A3] font-medium">{v}{metricSuffix}</text>
                           </g>
                         );
                       })}
 
                       {displayedMetrics.map((m, i) => {
                         const groupX = 55 + i * 72;
-                        const v7 = (activeMetricTab === 'mape' ? m.mape7 : m.rmse7);
-                        const v28 = (activeMetricTab === 'mape' ? m.mape28 : m.rmse28);
-                        const v90 = (activeMetricTab === 'mape' ? m.mape90 : m.rmse90);
+                        const v7 = isMape ? m.mape7 : m.rmse7;
+                        const v28 = isMape ? m.mape28 : m.rmse28;
+                        const v90 = isMape ? m.mape90 : m.rmse90;
 
                         const has7 = typeof v7 === 'number';
                         const has28 = typeof v28 === 'number';
@@ -729,17 +798,17 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                           <g key={m.modelId}>
                             {has7 && (
                               <rect x={groupX} y={160 - h7} width="16" height={Math.max(h7, 2)} fill="#CDC1FF" rx="3">
-                                <title>{`${m.name} 7D: ${v7}${activeMetricTab === 'mape' ? '%' : ''}`}</title>
+                                <title>{`${m.name} 7D: ${v7}${metricSuffix}`}</title>
                               </rect>
                             )}
                             {has28 && (
                               <rect x={groupX + 18} y={160 - h28} width="16" height={Math.max(h28, 2)} fill="#A294F9" rx="3">
-                                <title>{`${m.name} 28D: ${v28}${activeMetricTab === 'mape' ? '%' : ''}`}</title>
+                                <title>{`${m.name} 28D: ${v28}${metricSuffix}`}</title>
                               </rect>
                             )}
                             {has90 ? (
                               <rect x={groupX + 36} y={160 - h90} width="16" height={Math.max(h90, 2)} fill="#5F5670" rx="3">
-                                <title>{`${m.name} 90D: ${v90}${activeMetricTab === 'mape' ? '%' : ''}`}</title>
+                                <title>{`${m.name} 90D: ${v90}${metricSuffix}`}</title>
                               </rect>
                             ) : (
                               /* Placeholder slot indicating unevaluated horizon without drawing a zero-height bar */
@@ -787,14 +856,14 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                       <h3 className="text-lg font-bold font-heading text-[#1F1B2C]">
                         Horizon Consistency Analysis
                       </h3>
-                      {!is90DMapeEvaluated && (
+                      {!is90DEvaluated && (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
                           90D Not Evaluated
                         </span>
                       )}
                     </div>
                     <p className="text-xs text-[#5F5670]">
-                      How error scales from 7D to 90D: steeper slopes denote rapid accuracy decay.
+                      How {isMape ? 'MAPE error' : 'RMSE error'} scales from 7D to 90D: steeper slopes denote rapid accuracy decay.
                     </p>
                   </div>
 
@@ -805,7 +874,7 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                         return (
                           <g key={v}>
                             <line x1="60" y1={y} x2="480" y2={y} stroke="#E5D9F2" strokeDasharray="3 3" />
-                            <text x="52" y={y + 3} textAnchor="end" className="text-[9px] fill-[#8E83A3] font-medium">{v}%</text>
+                            <text x="52" y={y + 3} textAnchor="end" className="text-[9px] fill-[#8E83A3] font-medium">{v}{metricSuffix}</text>
                           </g>
                         );
                       })}
@@ -816,7 +885,7 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
 
                       <text x="90" y="166" textAnchor="middle" className="text-[10px] font-bold fill-[#1F1B2C]">7 Days</text>
                       <text x="250" y="166" textAnchor="middle" className="text-[10px] font-bold fill-[#1F1B2C]">28 Days</text>
-                      {is90DMapeEvaluated ? (
+                      {is90DEvaluated ? (
                         <text x="410" y="166" textAnchor="middle" className="text-[10px] font-bold fill-[#1F1B2C]">90 Days</text>
                       ) : (
                         <g>
@@ -825,7 +894,7 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                         </g>
                       )}
 
-                      {!is90DMapeEvaluated && (
+                      {!is90DEvaluated && (
                         <g>
                           <rect x="350" y="65" width="120" height="28" rx="8" fill="#FFFBEB" stroke="#FDE68A" strokeWidth="1" />
                           <text x="410" y="78" textAnchor="middle" className="text-[9.5px] font-bold fill-amber-800">
@@ -839,14 +908,18 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
 
                       {displayedMetrics.map((m) => {
                         const points = [];
-                        if (typeof m.mape7 === 'number') {
-                          points.push({ x: 90, y: 150 - (m.mape7 / maxLine) * 125, val: m.mape7 });
+                        const v7 = isMape ? m.mape7 : m.rmse7;
+                        const v28 = isMape ? m.mape28 : m.rmse28;
+                        const v90 = isMape ? m.mape90 : m.rmse90;
+
+                        if (typeof v7 === 'number') {
+                          points.push({ x: 90, y: 150 - (v7 / maxLine) * 125, val: v7 });
                         }
-                        if (typeof m.mape28 === 'number') {
-                          points.push({ x: 250, y: 150 - (m.mape28 / maxLine) * 125, val: m.mape28 });
+                        if (typeof v28 === 'number') {
+                          points.push({ x: 250, y: 150 - (v28 / maxLine) * 125, val: v28 });
                         }
-                        if (typeof m.mape90 === 'number') {
-                          points.push({ x: 410, y: 150 - (m.mape90 / maxLine) * 125, val: m.mape90 });
+                        if (typeof v90 === 'number') {
+                          points.push({ x: 410, y: 150 - (v90 / maxLine) * 125, val: v90 });
                         }
 
                         if (points.length === 0) return null;
@@ -874,7 +947,7 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                             )}
                             {points.map((p, pIdx) => (
                               <circle key={pIdx} cx={p.x} cy={p.y} r={isLightGBM || isSARIMA ? 4 : 3} fill={color}>
-                                <title>{`${m.name}: ${p.val}% MAPE`}</title>
+                                <title>{`${m.name}: ${p.val}${metricSuffix} ${isMape ? 'MAPE' : 'RMSE'}`}</title>
                               </circle>
                             ))}
                             <text
@@ -883,7 +956,7 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                               className="text-[8.5px] font-bold"
                               fill={color}
                             >
-                              {m.name.split(' ')[0]} ({lastPoint.val}%)
+                              {m.name.split(' ')[0]} ({lastPoint.val}{metricSuffix})
                             </text>
                           </g>
                         );
@@ -893,16 +966,20 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
                     <div className="text-[11px] text-[#5F5670] mt-3 pt-2 border-t border-[#E5D9F2] flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-3">
                         <span className="flex items-center gap-1">
-                          <span className="w-2.5 h-2.5 rounded-full inline-block bg-[#059669]"></span>
-                          <strong className="text-[#059669]">LightGBM (Best 7D)</strong>
+                          <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: color7 }}></span>
+                          <strong style={{ color: color7 }}>
+                            {best7Model ? `${best7Model.toUpperCase()} (Best 7D${best7Value !== undefined && best7Value !== null ? `: ${best7Value}${metricSuffix}` : ''})` : 'LightGBM (Best 7D)'}
+                          </strong>
                         </span>
                         <span className="flex items-center gap-1">
-                          <span className="w-2.5 h-2.5 rounded-full inline-block bg-[#2563EB]"></span>
-                          <strong className="text-[#2563EB]">SARIMA (Best 28D)</strong>
+                          <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: color28 }}></span>
+                          <strong style={{ color: color28 }}>
+                            {best28Model ? `${best28Model.toUpperCase()} (Best 28D${best28Value !== undefined && best28Value !== null ? `: ${best28Value}${metricSuffix}` : ''})` : 'SARIMA (Best 28D)'}
+                          </strong>
                         </span>
                       </div>
                       <span>
-                        {!is90DMapeEvaluated ? (
+                        {!is90DEvaluated ? (
                           <span className="text-amber-700 font-semibold bg-amber-50 px-2 py-0.5 rounded-full">
                             90-Day horizon: Not Evaluated
                           </span>

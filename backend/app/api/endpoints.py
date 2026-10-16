@@ -456,13 +456,20 @@ def get_chronological_splits(
     test_horizon: int = Query(28, ge=1, le=180),
     val_horizon: int = Query(14, ge=1, le=180),
 ):
-    """Get strictly chronological Train / Validation / Test temporal cutoffs."""
-    entry = CLEANED_DATASET_STORE.get(dataset_id) or get_dataset(dataset_id)
+    """Get strictly chronological Train / Validation / Test temporal cutoffs on cleaned, model-eligible data."""
+    if dataset_id not in CLEANED_DATASET_STORE:
+        raw_entry = get_dataset(dataset_id)
+        if not raw_entry:
+            raise HTTPException(status_code=404, detail=f"Dataset with ID '{dataset_id}' not found.")
+        mapping = detect_candidate_columns(list(raw_entry["df"].columns))
+        clean_canonical_dataset(dataset_id, raw_entry["df"], mapping)
+
+    entry = CLEANED_DATASET_STORE.get(dataset_id)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Dataset with ID '{dataset_id}' not found.")
 
     df = entry["df"]
-    mapping = detect_candidate_columns(list(df.columns))
+    mapping = entry.get("mapping") or detect_candidate_columns(list(df.columns))
     return compute_chronological_splits(dataset_id, df, mapping, test_horizon_days=test_horizon, val_horizon_days=val_horizon)
 
 
@@ -843,6 +850,46 @@ def get_evaluation_comparison_matrices(
                     series_rmses[m][h] = item.get("rmse")
 
         if found_series_eval:
+            # Calculate series-specific best_per_horizon and best_model_overall from series_mapes and series_rmses
+            series_best_per_horizon = {}
+            for h in cached.get("horizons_evaluated", []):
+                h_str = str(h) if str(h).endswith("D") else f"{h}D"
+                # Find model with minimum valid MAPE for horizon h
+                valid_models = [
+                    (m, series_mapes[m].get(h_str))
+                    for m in series_mapes
+                    if series_mapes[m].get(h_str) is not None
+                ]
+                if valid_models:
+                    min_mape = min(vm[1] for vm in valid_models)
+                    best_m = next(vm[0] for vm in valid_models if vm[1] == min_mape)
+                    best_rmse = series_rmses.get(best_m, {}).get(h_str)
+                    series_best_per_horizon[h_str] = {
+                        "best_model": best_m,
+                        "mape": min_mape,
+                        "rmse": best_rmse,
+                        "is_tie": False,
+                        "tied_models": [],
+                    }
+                else:
+                    series_best_per_horizon[h_str] = None
+
+            # Calculate best model overall for this series
+            model_avg_mapes = {}
+            for m in series_mapes:
+                vals = [v for v in series_mapes[m].values() if v is not None]
+                if vals:
+                    model_avg_mapes[m] = sum(vals) / len(vals)
+            series_best_overall = None
+            if model_avg_mapes:
+                best_overall_m = min(model_avg_mapes, key=model_avg_mapes.get)
+                series_best_overall = {
+                    "model": best_overall_m,
+                    "overall_mape": round(model_avg_mapes[best_overall_m], 2),
+                    "horizons_covered": len([v for v in series_mapes[best_overall_m].values() if v is not None]),
+                    "evaluated_horizons": [h for h, v in series_mapes[best_overall_m].items() if v is not None],
+                }
+
             return {
                 "dataset_id": dataset_id,
                 "series_id": series_id,
@@ -850,8 +897,8 @@ def get_evaluation_comparison_matrices(
                 "horizons_evaluated": cached.get("horizons_evaluated", []),
                 "table_1_model_x_horizon_mape": series_mapes,
                 "table_2_model_x_horizon_rmse": series_rmses,
-                "best_per_horizon": cached.get("best_per_horizon", {}),
-                "best_model_overall": cached.get("best_model_overall"),
+                "best_per_horizon": series_best_per_horizon,
+                "best_model_overall": series_best_overall,
                 "execution_duration_ms": cached.get("execution_duration_ms", 0.0),
                 "is_series_specific": True,
             }
@@ -944,59 +991,26 @@ def _resolve_insights_for_series(
 ) -> BusinessInsightsResponse:
     from ..forecasting.engine import UnifiedForecastEngine
 
-    entry = CLEANED_DATASET_STORE.get(dataset_id) or get_dataset(dataset_id)
-    if not entry:
-        raise HTTPException(status_code=404, detail=f"Dataset with ID '{dataset_id}' not found.")
-
-    df = entry["df"]
-    mapping = entry.get("mapping") or detect_candidate_columns(list(df.columns))
-    series_col = mapping.get("series_id") or "series_id"
-    if series_col not in df.columns:
-        series_col = df.columns[0]
-
-    store_col = mapping.get("optional", {}).get("store_id") if isinstance(mapping.get("optional"), dict) else None
-    cat_col = mapping.get("optional", {}).get("category") if isinstance(mapping.get("optional"), dict) else None
-    item_col = mapping.get("optional", {}).get("item_id") if isinstance(mapping.get("optional"), dict) else None
-
-    # Resolve series_id from scope filters if not provided
-    if not series_id:
-        scoped_df = df.copy()
-        if store_col and store_id:
-            scoped_df = scoped_df[scoped_df[store_col].astype(str) == str(store_id)]
-        if cat_col and category:
-            scoped_df = scoped_df[scoped_df[cat_col].astype(str) == str(category)]
-        if item_col and item_id:
-            scoped_df = scoped_df[scoped_df[item_col].astype(str) == str(item_id)]
-        if not scoped_df.empty:
-            series_id = str(scoped_df[series_col].iloc[0])
-            series_df = scoped_df[scoped_df[series_col].astype(str) == series_id].copy()
-        else:
-            series_id = str(df[series_col].iloc[0])
-            series_df = df[df[series_col].astype(str) == series_id].copy()
-    else:
-        series_df = df[df[series_col].astype(str) == str(series_id)].copy()
-        if store_col and store_id:
-            store_matches = series_df[series_df[store_col].astype(str) == str(store_id)]
-            if not store_matches.empty:
-                series_df = store_matches
-            else:
-                # The series_id does not belong to store_id. Switch series_id to one matching store_id
-                alt_store_df = df[df[store_col].astype(str) == str(store_id)]
-                if not alt_store_df.empty:
-                    if item_col and item_id:
-                        item_matches = alt_store_df[alt_store_df[item_col].astype(str) == str(item_id)]
-                        if not item_matches.empty:
-                            alt_store_df = item_matches
-                    series_id = str(alt_store_df[series_col].iloc[0])
-                    series_df = df[df[series_col].astype(str) == str(series_id)].copy()
-
-    if series_df.empty:
-        raise HTTPException(status_code=404, detail=f"Series ID '{series_id}' not found in dataset '{dataset_id}'.")
+    # Retrieve verified single-series data through UnifiedForecastEngine to ensure
+    # exact scope resolution and cleaned data usage
+    try:
+        series_df, mapping, resolved_series = UnifiedForecastEngine.get_series_data(
+            dataset_id=dataset_id,
+            series_id=series_id,
+            store_id=store_id,
+            category=category,
+            item_id=item_id,
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=404, detail=str(ve))
 
     # Generate forecast for the series
     forecast_req = ForecastRequest(
         dataset_id=dataset_id,
-        series_id=str(series_id),
+        series_id=str(resolved_series),
+        store_id=store_id,
+        category=category,
+        item_id=item_id,
         horizon=horizon,
         model=model,
     )
@@ -1008,7 +1022,7 @@ def _resolve_insights_for_series(
         store_id=store_id,
         category=category,
         item_id=item_id,
-        series_id=series_id,
+        series_id=resolved_series,
         horizon=horizon,
     )
 
@@ -1042,6 +1056,8 @@ def generate_insights_endpoint(req: InsightRequest):
         )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Insight generation failed: {str(e)}")
 
@@ -1085,6 +1101,8 @@ def get_dataset_insights(
             model=model,
             horizon=horizon,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Insight retrieval failed: {str(e)}")
 
@@ -1093,11 +1111,14 @@ def get_dataset_insights(
 def get_series_insights(
     dataset_id: str,
     series_id: str,
+    store_id: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    item_id: Optional[str] = Query(None),
     model: str = Query("automatic"),
     horizon: int = Query(28, ge=7, le=90),
 ):
     """
-    Retrieve or generate business insights for a specific series.
+    Retrieve or generate business insights for a specific series and scope.
     """
     try:
         cached = BusinessInsightEngine.get_cached_insights(
@@ -1105,6 +1126,9 @@ def get_series_insights(
             series_id=series_id,
             horizon=horizon,
             model=model,
+            store_id=store_id,
+            category=category,
+            item_id=item_id,
         )
         if cached:
             return cached
@@ -1112,6 +1136,9 @@ def get_series_insights(
         return _resolve_insights_for_series(
             dataset_id=dataset_id,
             series_id=series_id,
+            store_id=store_id,
+            category=category,
+            item_id=item_id,
             model=model,
             horizon=horizon,
         )
