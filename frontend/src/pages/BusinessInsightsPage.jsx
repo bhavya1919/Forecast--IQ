@@ -65,13 +65,6 @@ export default function BusinessInsightsPage({ onNavigate, uploadedDataset }) {
   useEffect(() => {
     if (!uploadedDataset?.dataset_id) return;
 
-    // Fetch monitoring status
-    getMonitoringFromBackend(uploadedDataset.dataset_id)
-      .then((m) => {
-        if (m) setMonitoringData(m);
-      })
-      .catch(() => {});
-
     // Abort previous in-flight request to prevent async race conditions
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -79,12 +72,45 @@ export default function BusinessInsightsPage({ onNavigate, uploadedDataset }) {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    // Stale result protection: clear old insights asynchronously when scope changes
+    // Reset old data to prevent stale asynchronous display while loading new scope
     Promise.resolve().then(() => {
       setInsightsData(null);
+      setMonitoringData(null);
       setIsLoading(true);
       setErrorMsg(null);
     });
+
+    // Fetch scope-specific monitoring status
+    getMonitoringFromBackend(
+      uploadedDataset.dataset_id,
+      {
+        series_id: selectedSeries || undefined,
+        store_id: selectedStore || undefined,
+        category: selectedCategory || undefined,
+        item_id: selectedItem || undefined,
+        model: selectedModel,
+        horizon: selectedHorizon,
+      },
+      controller.signal
+    )
+      .then((m) => {
+        if (m) {
+          // Scope validation: ensure monitoring response matches current scope
+          if (m.scope) {
+            if (selectedStore && m.scope.store_id && String(m.scope.store_id) !== String(selectedStore)) return;
+            if (selectedCategory && m.scope.category && String(m.scope.category) !== String(selectedCategory)) return;
+            if (selectedItem && m.scope.item_id && String(m.scope.item_id) !== String(selectedItem)) return;
+            if (selectedSeries && m.scope.series_id && String(m.scope.series_id) !== String(selectedSeries)) return;
+            if (m.scope.horizon && m.scope.horizon !== selectedHorizon) return;
+          }
+          setMonitoringData(m);
+        }
+      })
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          // Keep null or unavailable
+        }
+      });
 
     getInsightsFromBackend(
       uploadedDataset.dataset_id,
@@ -210,25 +236,50 @@ export default function BusinessInsightsPage({ onNavigate, uploadedDataset }) {
 
       {/* Monitoring Alert Banner if active dataset has drift */}
       {monitoringData && (
-        <section className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
-          monitoringData.status === 'ACCURACY DRIFT'
-            ? 'bg-rose-50 border-rose-200 text-rose-800'
-            : monitoringData.status === 'WATCH'
-              ? 'bg-amber-50 border-amber-200 text-amber-800'
-              : 'bg-[#F5EFFF] border-[#CDC1FF] text-[#1F1B2C]'
-        }`}>
+        <section 
+          data-testid="model-health-banner"
+          className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+            monitoringData.status === 'ACCURACY DRIFT'
+              ? 'bg-rose-50 border-rose-200 text-rose-800'
+              : monitoringData.status === 'WATCH'
+                ? 'bg-amber-50 border-amber-200 text-amber-800'
+                : monitoringData.status === 'HEALTHY'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-[#F5EFFF] border-[#CDC1FF] text-[#5F5670]'
+          }`}
+        >
           <div className="flex items-center gap-2.5">
-            <span className={`w-2.5 h-2.5 rounded-full ${
+            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
               monitoringData.status === 'ACCURACY DRIFT' ? 'bg-rose-500 animate-pulse' :
-              monitoringData.status === 'WATCH' ? 'bg-amber-500' : 'bg-emerald-500'
+              monitoringData.status === 'WATCH' ? 'bg-amber-500' : 
+              monitoringData.status === 'HEALTHY' ? 'bg-emerald-500' : 'bg-[#A294F9]'
             }`} />
             <div>
-              <span className="font-bold uppercase tracking-wider">Model Health Status: {monitoringData.status}</span>
-              {monitoringData.mape_drift_pct !== null && (
-                <span className="ml-2 font-medium opacity-80">(Drift: {monitoringData.mape_drift_pct > 0 ? `+${monitoringData.mape_drift_pct}%` : `${monitoringData.mape_drift_pct}%`})</span>
-              )}
-              {monitoringData.retraining_alert && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-bold uppercase tracking-wider text-[#1F1B2C]">
+                  Model Health Status: {monitoringData.status}
+                </span>
+                {monitoringData.mape_drift_pct !== null && monitoringData.mape_drift_pct !== undefined ? (
+                  <span 
+                    className="font-medium opacity-85"
+                    title="Accuracy Drift: relative percentage change in MAPE (forecast error) from the baseline backtest fold to the latest evaluation fold. A positive percentage indicates error growth (accuracy degradation)."
+                  >
+                    (Accuracy Drift: {monitoringData.mape_drift_pct > 0 ? `+${monitoringData.mape_drift_pct}%` : `${monitoringData.mape_drift_pct}%`})
+                  </span>
+                ) : (
+                  <span className="font-medium text-[#8E83A3]">
+                    (No empirical multi-fold drift calculated)
+                  </span>
+                )}
+              </div>
+              {monitoringData.retraining_alert ? (
                 <p className="mt-0.5 font-medium">{monitoringData.retraining_alert}</p>
+              ) : (
+                <p className="mt-0.5 text-[11px] text-[#5F5670]">
+                  {monitoringData.status === 'HEALTHY'
+                    ? 'Empirical multi-fold backtesting indicates model accuracy is stable across evaluation origins.'
+                    : (monitoringData.details?.[0]?.message || 'Grounded on chronological backtesting validation folds.')}
+                </p>
               )}
             </div>
           </div>

@@ -743,3 +743,112 @@ def test_forecast_no_overlap_with_historical_dates():
     assert fc_dates[-1] == "2025-06-28"
 
 
+def test_monitoring_insufficient_evidence_when_single_fold_or_no_data():
+    """Verify that MonitoringTracker never returns HEALTHY without at least 2 distinct evaluation folds."""
+    # 0 folds / no evaluations
+    rep_empty = MonitoringTracker.evaluate_monitoring_status("DS_EMPTY", backtest_summary={
+        "models_evaluated": ["arima"],
+        "series_details": []
+    })
+    assert rep_empty.status == "INSUFFICIENT DATA"
+    assert rep_empty.mape_drift_pct is None
+    assert rep_empty.is_alert is False
+
+    # 1 fold only -> not enough to measure fold-over-fold degradation
+    rep_single = MonitoringTracker.evaluate_monitoring_status("DS_SINGLE", backtest_summary={
+        "models_evaluated": ["arima"],
+        "series_details": [{"series_id": "S1", "folds": [
+            {"fold": 1, "mape": 12.0, "status": "SUCCESS"}
+        ]}]
+    })
+    assert rep_single.status == "INSUFFICIENT DATA"
+    assert rep_single.mape_drift_pct is None
+    assert rep_single.is_alert is False
+
+
+def test_monitoring_scope_filtering_and_not_evaluated_state():
+    """Verify that monitoring isolates specific series, model, and horizon scope."""
+    backtest_data = {
+        "models_evaluated": ["arima", "lightgbm"],
+        "best_per_horizon": {
+            "28D": {"best_model": "lightgbm", "mape": 10.0}
+        },
+        "series_details": [
+            {
+                "series_id": "SERIES_A",
+                "model": "lightgbm",
+                "horizon": 28,
+                "folds": [
+                    {"fold": 1, "mape": 8.0, "status": "SUCCESS"},
+                    {"fold": 2, "mape": 8.2, "status": "SUCCESS"},
+                ]
+            },
+            {
+                "series_id": "SERIES_B",
+                "model": "arima",
+                "horizon": 28,
+                "folds": [
+                    {"fold": 1, "mape": 10.0, "status": "SUCCESS"},
+                    {"fold": 2, "mape": 14.0, "status": "SUCCESS"},  # 40% drift!
+                ]
+            }
+        ]
+    }
+
+    # Scoped to SERIES_A with lightgbm (healthy)
+    rep_a = MonitoringTracker.evaluate_monitoring_status(
+        "DS_MULTI_SCOPE",
+        backtest_summary=backtest_data,
+        series_id="SERIES_A",
+        model="lightgbm",
+        horizon=28
+    )
+    assert rep_a.status == "HEALTHY"
+    assert rep_a.mape_drift_pct == 2.5
+    assert rep_a.is_alert is False
+
+    # Scoped to SERIES_B with arima (accuracy drift alert)
+    rep_b = MonitoringTracker.evaluate_monitoring_status(
+        "DS_MULTI_SCOPE",
+        backtest_summary=backtest_data,
+        series_id="SERIES_B",
+        model="arima",
+        horizon=28
+    )
+    assert rep_b.status == "ACCURACY DRIFT"
+    assert rep_b.mape_drift_pct == 40.0
+    assert rep_b.is_alert is True
+
+    # Scoped to un-evaluated series -> NOT EVALUATED (not fabricated healthy!)
+    rep_unevaluated = MonitoringTracker.evaluate_monitoring_status(
+        "DS_MULTI_SCOPE",
+        backtest_summary=backtest_data,
+        series_id="SERIES_C",
+        model="arima",
+        horizon=28
+    )
+    assert rep_unevaluated.status == "NOT EVALUATED"
+    assert rep_unevaluated.mape_drift_pct is None
+
+
+def test_monitoring_endpoint_query_params():
+    """Verify GET /api/monitoring/{dataset_id} supports and respects scope query params."""
+    ds_id = "DS_API_MONITOR_TEST"
+    df = pd.DataFrame({
+        "date": pd.date_range("2024-01-01", periods=90, freq="D"),
+        "series_id": "SERIES_MTEST",
+        "target": np.random.uniform(50, 100, 90)
+    })
+    save_dataset(ds_id, df, "mtest.csv")
+
+    res = client.get(f"/api/monitoring/{ds_id}?series_id=SERIES_MTEST&model=arima&horizon=28")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["dataset_id"] == ds_id
+    assert data["series_id"] == "SERIES_MTEST"
+    assert data["horizon"] == 28
+    # Initially no backtest run -> INSUFFICIENT DATA or NOT EVALUATED, never fake HEALTHY
+    assert data["status"] in ["INSUFFICIENT DATA", "NOT EVALUATED"]
+
+
+

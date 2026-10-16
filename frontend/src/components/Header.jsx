@@ -1,7 +1,13 @@
 import React from 'react';
 import { Menu, Bell, Calendar } from 'lucide-react';
 
-export default function Header({ activeTab, onMobileToggle }) {
+export default function Header({ 
+  activeTab, 
+  onMobileToggle, 
+  uploadedDataset = null, 
+  isRestoringDataset = false, 
+  restorationError = null 
+}) {
   const getPageInfo = (tab) => {
     switch (tab) {
       case 'home':
@@ -49,6 +55,80 @@ export default function Header({ activeTab, onMobileToggle }) {
 
   const { title, breadcrumb } = getPageInfo(activeTab);
 
+  // Compute cutoff display based on active dataset state
+  const renderCutoff = () => {
+    if (isRestoringDataset) {
+      return (
+        <div 
+          data-testid="header-cutoff-badge"
+          className="hidden md:flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E5D9F2] shadow-xs text-xs text-[#5F5670]"
+        >
+          <div className="w-3 h-3 border-2 border-[#A294F9] border-t-transparent rounded-full animate-spin"></div>
+          <span className="font-medium text-[#1F1B2C]">Cutoff:</span>
+          <span>Resolving...</span>
+        </div>
+      );
+    }
+
+    if (restorationError) {
+      return (
+        <div 
+          data-testid="header-cutoff-badge"
+          className="hidden md:flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-rose-200 shadow-xs text-xs text-rose-600"
+        >
+          <Calendar className="w-3.5 h-3.5 text-rose-400" />
+          <span className="font-medium">Cutoff:</span>
+          <span>Unavailable</span>
+        </div>
+      );
+    }
+
+    if (!uploadedDataset) {
+      // Default M5 Benchmark
+      return (
+        <div 
+          data-testid="header-cutoff-badge"
+          className="hidden md:flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E5D9F2] shadow-xs text-xs text-[#5F5670]"
+        >
+          <Calendar className="w-3.5 h-3.5 text-[#A294F9]" />
+          <span className="font-medium text-[#1F1B2C]">Cutoff: Day 1913</span>
+          <span className="text-[#CDC1FF]">•</span>
+          <span>2016-04-24</span>
+        </div>
+      );
+    }
+
+    // Active Custom Dataset: derive strictly from dataset's valid historical data
+    // Never show M5 date or Day 1913 index for a custom dataset
+    const dateRangeEnd = uploadedDataset.profile?.dateRange?.end;
+    const splitTestEnd = uploadedDataset.splits?.test?.end_date;
+    const cutoffDate = (dateRangeEnd && dateRangeEnd !== 'N/A') ? dateRangeEnd : (splitTestEnd || 'N/A');
+
+    // Only display Day N if genuine benchmark day index is defined on the dataset
+    const dayIndex = uploadedDataset.benchmarkDayIndex || uploadedDataset.profile?.dayIndex || null;
+
+    return (
+      <div 
+        data-testid="header-cutoff-badge"
+        className="hidden md:flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E5D9F2] shadow-xs text-xs text-[#5F5670]"
+      >
+        <Calendar className="w-3.5 h-3.5 text-[#A294F9]" />
+        {dayIndex ? (
+          <>
+            <span className="font-medium text-[#1F1B2C]">Cutoff: Day {dayIndex}</span>
+            <span className="text-[#CDC1FF]">•</span>
+            <span>{cutoffDate}</span>
+          </>
+        ) : (
+          <>
+            <span className="font-medium text-[#1F1B2C]">Cutoff:</span>
+            <span>{cutoffDate}</span>
+          </>
+        )}
+      </div>
+    );
+  };
+
   return (
     <header className="sticky top-0 z-30 bg-[#F5EFFF]/90 backdrop-blur-md border-b border-[#E5D9F2]/60 px-6 py-4">
       <div className="flex items-center justify-between gap-4">
@@ -75,12 +155,7 @@ export default function Header({ activeTab, onMobileToggle }) {
         {/* Right: Controls & Profile */}
         <div className="flex items-center gap-3">
           {/* Baseline Context selector */}
-          <div className="hidden md:flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-[#E5D9F2] shadow-xs text-xs text-[#5F5670]">
-            <Calendar className="w-3.5 h-3.5 text-[#A294F9]" />
-            <span className="font-medium text-[#1F1B2C]">Cutoff: Day 1913</span>
-            <span className="text-[#CDC1FF]">•</span>
-            <span>2016-04-24</span>
-          </div>
+          {renderCutoff()}
 
           {/* Quick Notification */}
           <button 

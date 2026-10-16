@@ -209,6 +209,9 @@ export default function App() {
         <Header 
           activeTab={activeTab} 
           onMobileToggle={() => setMobileOpen(true)} 
+          uploadedDataset={uploadedDataset}
+          isRestoringDataset={isRestoringDataset}
+          restorationError={restorationError}
         />
 
         {/* Page Content Container with generous padding */}

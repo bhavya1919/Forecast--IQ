@@ -157,14 +157,56 @@ A comprehensive, evidence-based functional audit and end-to-end verification was
 - [x] **12. Business Insights:** Generated from active model forecast and scope; Demand Outlook matches mean and peak values.
 - [x] **13. Scope Synchronization:** Changing from STORE_01 to STORE_02 or uploading a new dataset resets and recalculates metrics cleanly.
 - [x] **14. Cache & Namespace Isolation:** Backtesting and insights isolated by compound keys.
-- [x] **15. Model Monitoring:** Evaluates model accuracy drift against historical baselines.
-- [x] **16. MongoDB Persistence:** Verified with live MongoDB instance in persistent mode.
-- [x] **17. Automated Tests:** 177 backend pytest tests and 27 frontend Vitest tests pass cleanly.
-- [x] **18. Build & Lint:** 0 ESLint errors; production build completes cleanly.
+- [x] **15. Model Monitoring & Evidence-Based Health:** Evaluates empirical accuracy degradation fold-over-fold; returns honest INSUFFICIENT DATA / NOT EVALUATED when unproven; never fabricates HEALTHY; supports full series/model/horizon scope filtering.
+- [x] **16. Dynamic Header Cutoff:** Displays M5 benchmark cutoff when default; displays custom dataset's latest valid historical cutoff (without Day N) when active; loading and unavailable states supported; persists across browser refresh.
+- [x] **17. MongoDB Persistence:** Verified with live MongoDB instance in persistent mode.
+- [x] **18. Automated Tests:** 195 backend pytest tests (195/195 pass) and 45 frontend Vitest tests (45/45 across 7 test suites pass).
+- [x] **19. Build & Lint:** 0 ESLint errors; production build completes cleanly.
 
 ---
 
-## 7. Final Acceptance Decision
+## 7. Functional Fixes Addendum: Header Cutoff & Evidence-Based Model Health
+
+### Issue 1: Application Header Cutoff is Dataset-Aware
+- **Root Cause:**
+  1. `frontend/src/components/Header.jsx` previously had hardcoded JSX: `<span className="font-medium text-[#1F1B2C]">Cutoff: Day 1913</span><span>2016-04-24</span>`.
+  2. `frontend/src/App.jsx` rendered `<Header activeTab={activeTab} />` without forwarding the active dataset context (`uploadedDataset`, `isRestoringDataset`, `restorationError`).
+- **Fix Applied:**
+  1. Updated `Header.jsx` to render dynamically:
+     - Default M5 Benchmark: `Cutoff: Day 1913 • 2016-04-24`.
+     - Active Custom Dataset: `Cutoff: ${uploadedDataset.profile?.dateRange?.end || uploadedDataset.splits?.test?.end_date}`.
+     - Day N index is displayed strictly if a benchmark day index is defined; omitted for custom datasets.
+     - Loading / restoring state: `Cutoff: Resolving...` with spinner.
+     - Error state: `Cutoff: Unavailable`.
+  2. Updated `App.jsx` to pass `uploadedDataset`, `isRestoringDataset`, and `restorationError` into `<Header />`.
+  3. Added unit tests in `frontend/src/test/header.test.jsx` (5/5 pass).
+
+### Issue 2: Evidence-Based Model Health and Predictive Accuracy Drift
+- **Root Cause:**
+  1. `backend/app/insights/monitoring.py` was aggregating all series and models globally without filtering by the active series, model, or horizon scope.
+  2. When only 1 fold was available or no evaluations existed, it returned a default `"HEALTHY"` with `mape_drift_pct=0.0`.
+  3. Endpoint `GET /api/monitoring/{dataset_id}` did not accept scope query parameters (`series_id`, `model`, `horizon`, etc.).
+  4. The frontend label did not clearly communicate that drift measures relative change in MAPE (forecast error) across chronological backtesting folds.
+- **Fix Applied:**
+  1. Extended `MonitoringTracker.evaluate_monitoring_status` in `monitoring.py` to accept and filter by `series_id`, `model`, `horizon`, `store_id`, `category`, and `item_id`.
+  2. When evaluations are missing or fewer than 2 folds exist, returns honest `"INSUFFICIENT DATA"` or `"NOT EVALUATED"`. Never labels a model HEALTHY without empirical multi-fold evidence.
+  3. Added query parameters to `GET /api/monitoring/{dataset_id}` in `backend/app/api/endpoints.py`.
+  4. Updated `frontend/src/services/api.js` (`getMonitoringFromBackend`) and `frontend/src/pages/BusinessInsightsPage.jsx` to pass the active scope, handle abort signals, and reset state on scope changes.
+  5. Updated the Business Insights health banner to clearly label the metric as **Accuracy Drift**, with explanatory tooltip and honest visual states for `HEALTHY`, `WATCH`, `ACCURACY DRIFT`, `INSUFFICIENT DATA`, and `NOT EVALUATED`.
+  6. Added regression tests in `backend/tests/test_business_insights.py` (44/44 pass) and `frontend/src/test/businessInsights.test.jsx` (10/10 pass).
+
+### Browser Execution Verification
+- Automated Playwright browser tests (`verify_cutoff_health_browser.mjs`) confirmed:
+  - Default M5 Cutoff: `Cutoff: Day 1913 • 2016-04-24`.
+  - Custom Dataset (`03_edge_case_retail.csv`) Cutoff: `Cutoff: 2025-11-08` (M5 date and Day 1913 index completely absent).
+  - Browser reload (Ctrl+R equivalent): `Cutoff: 2025-11-08` maintained.
+  - Business Insights Health Banner: honestly rendered `Model Health Status: INSUFFICIENT DATA (No empirical multi-fold drift calculated)`.
+  - Revert to M5 Benchmark: `Cutoff: Day 1913 • 2016-04-24` cleanly restored.
+
+---
+
+## 8. Final Acceptance Decision
 
 **ACCEPTED (PASS).**  
 All functional requirements, diagnosis requirements, and integration test specifications are met with full verifiable evidence.
+

@@ -1149,16 +1149,33 @@ def get_series_insights(
 
 
 @router.get("/monitoring/{dataset_id}", response_model=MonitoringReport)
-def get_dataset_monitoring(dataset_id: str):
+def get_dataset_monitoring(
+    dataset_id: str,
+    series_id: Optional[str] = Query(None),
+    store_id: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    item_id: Optional[str] = Query(None),
+    model: Optional[str] = Query(None),
+    horizon: Optional[int] = Query(None),
+):
     """
-    Evaluate ongoing model performance across evaluation folds and detect potential accuracy drift.
+    Evaluate ongoing model performance across evaluation folds and detect potential accuracy drift
+    scoped to the active series, store, category, item, model, and horizon.
     """
     entry = CLEANED_DATASET_STORE.get(dataset_id) or get_dataset(dataset_id)
     if not entry:
         raise HTTPException(status_code=404, detail=f"Dataset with ID '{dataset_id}' not found.")
 
     try:
-        report = MonitoringTracker.evaluate_monitoring_status(dataset_id=dataset_id)
+        report = MonitoringTracker.evaluate_monitoring_status(
+            dataset_id=dataset_id,
+            series_id=series_id,
+            store_id=store_id,
+            category=category,
+            item_id=item_id,
+            model=model,
+            horizon=horizon,
+        )
         return report
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Monitoring evaluation failed: {str(e)}")

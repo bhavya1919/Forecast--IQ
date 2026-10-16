@@ -447,6 +447,69 @@ describe('Business Insights & Monitoring UI Engine', () => {
     // Trough date must be inside the window
     expect(screen.getByText(/12 units \(2025-11-08\)/i)).toBeInTheDocument();
   });
+
+  it('passes scope parameters to getMonitoringFromBackend and displays honest INSUFFICIENT DATA state', async () => {
+    api.getMonitoringFromBackend.mockResolvedValueOnce({
+      dataset_id: 'test-dataset-insights-123',
+      status: 'INSUFFICIENT DATA',
+      is_alert: false,
+      models_tracked: ['LightGBM'],
+      mape_drift_pct: null,
+      details: [{ message: 'Only 1 evaluation fold available for this scope.' }]
+    });
+
+    render(
+      <BusinessInsightsPage 
+        onNavigate={() => {}} 
+        uploadedDataset={mockUploadedDataset} 
+      />
+    );
+
+    await waitFor(() => {
+      expect(api.getMonitoringFromBackend).toHaveBeenCalledWith(
+        'test-dataset-insights-123',
+        expect.objectContaining({
+          model: 'automatic',
+          horizon: 28,
+        }),
+        expect.any(Object)
+      );
+    });
+
+    await waitFor(() => {
+      const banner = screen.getByTestId('model-health-banner');
+      expect(banner).toBeInTheDocument();
+      expect(banner).toHaveTextContent(/Model Health Status:\s*INSUFFICIENT DATA/i);
+      expect(banner).toHaveTextContent(/No empirical multi-fold drift calculated/i);
+    });
+  });
+
+  it('renders ACCURACY DRIFT alert and explanation when multi-fold error degradation occurs', async () => {
+    api.getMonitoringFromBackend.mockResolvedValueOnce({
+      dataset_id: 'test-dataset-insights-123',
+      status: 'ACCURACY DRIFT',
+      is_alert: true,
+      models_tracked: ['ARIMA'],
+      mape_drift_pct: 35.5,
+      retraining_alert: 'Prediction error increased by 35.5% from baseline fold 1 to fold 2.'
+    });
+
+    render(
+      <BusinessInsightsPage 
+        onNavigate={() => {}} 
+        uploadedDataset={mockUploadedDataset} 
+      />
+    );
+
+    await waitFor(() => {
+      const banner = screen.getByTestId('model-health-banner');
+      expect(banner).toBeInTheDocument();
+      expect(banner).toHaveTextContent(/Model Health Status:\s*ACCURACY DRIFT/i);
+      expect(banner).toHaveTextContent(/Accuracy Drift:\s*\+35\.5%/i);
+      expect(banner).toHaveTextContent(/Prediction error increased by 35\.5%/i);
+    });
+  });
 });
+
 
 

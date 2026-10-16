@@ -625,17 +625,26 @@ export async function generateInsightsInBackend(datasetId, seriesId, options = {
   return await res.json();
 }
 
-/**
- * Fetch model performance monitoring report from backend.
- */
-export async function getMonitoringFromBackend(datasetId) {
+export async function getMonitoringFromBackend(datasetId, options = {}, signal = null) {
+  const params = [];
+  if (options.series_id) params.push(`series_id=${encodeURIComponent(options.series_id)}`);
+  if (options.store_id) params.push(`store_id=${encodeURIComponent(options.store_id)}`);
+  if (options.category) params.push(`category=${encodeURIComponent(options.category)}`);
+  if (options.item_id) params.push(`item_id=${encodeURIComponent(options.item_id)}`);
+  if (options.model) params.push(`model=${encodeURIComponent(options.model)}`);
+  if (options.horizon) params.push(`horizon=${encodeURIComponent(options.horizon)}`);
+
+  const qs = params.length > 0 ? `?${params.join('&')}` : '';
+
   let res;
   try {
-    res = await fetch(`${API_BASE}/monitoring/${datasetId}`);
-  } catch {
+    res = await fetch(`${API_BASE}/monitoring/${datasetId}${qs}`, { signal });
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
     try {
-      res = await fetch(`http://localhost:8000/api/monitoring/${datasetId}`);
-    } catch {
+      res = await fetch(`http://localhost:8000/api/monitoring/${datasetId}${qs}`, { signal });
+    } catch (innerErr) {
+      if (innerErr.name === 'AbortError') throw innerErr;
       return null;
     }
   }
