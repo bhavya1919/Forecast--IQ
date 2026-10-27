@@ -1,13 +1,30 @@
-import React from 'react';
-import { Menu, Bell, Calendar } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Menu, Bell, Calendar, LogIn, UserPlus, LogOut, User, ChevronDown } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 
 export default function Header({ 
   activeTab, 
   onMobileToggle, 
   uploadedDataset = null, 
   isRestoringDataset = false, 
-  restorationError = null 
+  restorationError = null,
+  onNavigate = null
 }) {
+  const { user, isAuthenticated, logout } = useAuth();
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef(null);
+
+  // Close account menu on outside click
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(event.target)) {
+        setAccountMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
   const getPageInfo = (tab) => {
     switch (tab) {
       case 'home':
@@ -44,6 +61,16 @@ export default function Header({
         return {
           title: 'Business Insights',
           breadcrumb: 'ForecastIQ / Decision Support & Planning'
+        };
+      case 'login':
+        return {
+          title: 'Sign In',
+          breadcrumb: 'ForecastIQ / Account Access'
+        };
+      case 'register':
+        return {
+          title: 'Register',
+          breadcrumb: 'ForecastIQ / Account Creation'
         };
       default:
         return {
@@ -98,13 +125,9 @@ export default function Header({
       );
     }
 
-    // Active Custom Dataset: derive strictly from dataset's valid historical data
-    // Never show M5 date or Day 1913 index for a custom dataset
     const dateRangeEnd = uploadedDataset.profile?.dateRange?.end;
     const splitTestEnd = uploadedDataset.splits?.test?.end_date;
     const cutoffDate = (dateRangeEnd && dateRangeEnd !== 'N/A') ? dateRangeEnd : (splitTestEnd || 'N/A');
-
-    // Only display Day N if genuine benchmark day index is defined on the dataset
     const dayIndex = uploadedDataset.benchmarkDayIndex || uploadedDataset.profile?.dayIndex || null;
 
     return (
@@ -127,6 +150,15 @@ export default function Header({
         )}
       </div>
     );
+  };
+
+  const getInitials = (name) => {
+    if (!name) return 'EP';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
   };
 
   return (
@@ -152,7 +184,7 @@ export default function Header({
           </div>
         </div>
 
-        {/* Right: Controls & Profile */}
+        {/* Right: Controls & Profile / Auth */}
         <div className="flex items-center gap-3">
           {/* Baseline Context selector */}
           {renderCutoff()}
@@ -166,22 +198,88 @@ export default function Header({
             <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-[#A294F9]"></span>
           </button>
 
-          {/* User / Planner Avatar */}
-          <div className="flex items-center gap-2.5 pl-2">
-            <div className="w-8 h-8 rounded-full bg-[#E5D9F2] text-[#1F1B2C] font-semibold text-xs flex items-center justify-center border border-[#CDC1FF]">
-              EP
+          {/* Authentication State: Logged In vs Logged Out */}
+          {isAuthenticated && user ? (
+            <div className="relative pl-2" ref={accountMenuRef}>
+              <button
+                type="button"
+                data-testid="user-account-menu-button"
+                onClick={() => setAccountMenuOpen(!accountMenuOpen)}
+                className="flex items-center gap-2.5 p-1.5 rounded-2xl hover:bg-white/80 border border-transparent hover:border-[#E5D9F2] transition-all cursor-pointer"
+              >
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#A294F9] to-[#CDC1FF] text-white font-semibold text-xs flex items-center justify-center border border-[#CDC1FF] shadow-xs">
+                  {getInitials(user.full_name)}
+                </div>
+                <div className="hidden sm:block text-left">
+                  <div className="text-xs font-semibold text-[#1F1B2C] leading-none">
+                    {user.full_name}
+                  </div>
+                  <div className="text-[10px] text-[#8E83A3] mt-0.5 truncate max-w-[130px]">
+                    {user.email}
+                  </div>
+                </div>
+                <ChevronDown className="w-3.5 h-3.5 text-[#8E83A3]" />
+              </button>
+
+              {/* Account Dropdown Menu */}
+              {accountMenuOpen && (
+                <div 
+                  data-testid="user-account-dropdown"
+                  className="absolute right-0 mt-2 w-56 bg-white rounded-2xl border border-[#E5D9F2] shadow-lg py-2 z-50 animate-in fade-in zoom-in-95 duration-100"
+                >
+                  <div className="px-4 py-2.5 border-b border-[#F5EFFF]">
+                    <div className="text-xs font-bold text-[#1F1B2C] truncate">
+                      {user.full_name}
+                    </div>
+                    <div className="text-[11px] text-[#8E83A3] truncate mt-0.5">
+                      {user.email}
+                    </div>
+                  </div>
+
+                  <div className="p-1">
+                    <button
+                      type="button"
+                      data-testid="logout-button"
+                      onClick={async () => {
+                        setAccountMenuOpen(false);
+                        await logout();
+                        if (onNavigate) onNavigate('home');
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-rose-600 hover:bg-rose-50 rounded-xl transition-colors text-left cursor-pointer"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="hidden sm:block text-left">
-              <div className="text-xs font-semibold text-[#1F1B2C] leading-none">
-                Enterprise Planner
-              </div>
-              <div className="text-[10px] text-[#8E83A3] mt-0.5">
-                Supply Chain Analytics
-              </div>
+          ) : (
+            <div className="flex items-center gap-2 pl-2">
+              <button
+                type="button"
+                data-testid="header-login-button"
+                onClick={() => onNavigate && onNavigate('login')}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-[#CDC1FF] bg-white hover:bg-[#F5EFFF] text-[#1F1B2C] text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5 text-[#A294F9]" />
+                <span>Sign In</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="header-register-button"
+                onClick={() => onNavigate && onNavigate('register')}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#A294F9] hover:bg-[#8F7EF7] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Register</span>
+              </button>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </header>
   );
 }
+

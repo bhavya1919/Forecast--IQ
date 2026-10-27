@@ -14,3 +14,4 @@ lightgbm==4.7.0
 darts==0.47.0
 torch==2.14.0
 pytorch-lightning==2.6.6
+bcrypt>=4.0.0

@@ -112,6 +112,46 @@ def database_status():
     }
 
 
+@router.get("/db/health")
+def database_health():
+    """Dedicated MongoDB health check endpoint verifying ping and read/write availability."""
+    from ..db.mongo import MongoManager
+    from ..config.settings import settings
+
+    if not settings.MONGODB_ENABLED:
+        return {
+            "status": "disabled",
+            "connected": False,
+            "message": "MongoDB is disabled in configuration"
+        }
+
+    db = MongoManager.get_db()
+    if db is None:
+        return {
+            "status": "unhealthy",
+            "connected": False,
+            "message": "MongoDB connection could not be established"
+        }
+
+    try:
+        # Perform live ping command on the active cluster
+        ping_res = MongoManager._client.admin.command('ping')
+        return {
+            "status": "healthy",
+            "connected": True,
+            "database": settings.MONGODB_DATABASE,
+            "ping": bool(ping_res.get("ok")),
+            "message": "MongoDB Atlas connection is healthy and responsive"
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "connected": False,
+            "error": "MongoDB ping command failed",
+            "detail": str(e)
+        }
+
+
 @router.post("/data/upload", response_model=UploadResponse)
 async def upload_dataset(
     file: UploadFile = File(...),
@@ -293,6 +333,8 @@ def remap_dataset_columns(
         "date": mapping.date,
         "series_id": mapping.series_id,
         "target": mapping.target,
+        "composite_series_keys": mapping.composite_series_keys or [],
+        "candidate_entity_columns": mapping.candidate_entity_columns or [],
         "optional": mapping.optional
     }
 
@@ -405,6 +447,10 @@ def clean_dataset(
 
     df = entry["df"]
     mapping = detect_candidate_columns(list(df.columns))
+    if req and req.series_id:
+        mapping["series_id"] = req.series_id
+    if req and req.composite_series_keys:
+        mapping["composite_series_keys"] = req.composite_series_keys
 
     additive = req.additive_aggregation if req else True
     target_type = req.target_type if req and req.target_type else "additive"
@@ -453,8 +499,9 @@ def get_series_quality_report(dataset_id: str):
 @router.get("/data/{dataset_id}/splits", response_model=SplitReport)
 def get_chronological_splits(
     dataset_id: str,
-    test_horizon: int = Query(28, ge=1, le=180),
-    val_horizon: int = Query(14, ge=1, le=180),
+    test_horizon: Optional[int] = Query(None, ge=1, le=180),
+    val_horizon: Optional[int] = Query(None, ge=1, le=180),
+    strategy: Optional[str] = Query(None),
 ):
     """Get strictly chronological Train / Validation / Test temporal cutoffs on cleaned, model-eligible data."""
     if dataset_id not in CLEANED_DATASET_STORE:
@@ -470,7 +517,16 @@ def get_chronological_splits(
 
     df = entry["df"]
     mapping = entry.get("mapping") or detect_candidate_columns(list(df.columns))
-    return compute_chronological_splits(dataset_id, df, mapping, test_horizon_days=test_horizon, val_horizon_days=val_horizon)
+    # If explicit horizons are passed without strategy="80:20", use explicit horizons
+    use_80_20 = (strategy == "80:20") or (test_horizon is None and val_horizon is None)
+    return compute_chronological_splits(
+        dataset_id,
+        df,
+        mapping,
+        test_horizon_days=None if use_80_20 else test_horizon,
+        val_horizon_days=None if use_80_20 else val_horizon,
+        use_80_20_ratio=use_80_20
+    )
 
 
 @router.get("/data/{dataset_id}/preprocessing-status")
@@ -551,6 +607,17 @@ def _get_series_training_data(
     return series_df, mapping
 
 
+def _persist_forecast(result: ForecastResult):
+    """Persist forecast result to MongoDB if enabled, with error handling."""
+    try:
+        from ..db.mongo import MongoRepository
+        saved = MongoRepository.save_forecast_result(result.model_dump())
+        if not saved:
+            logger.warning(f"Failed to persist forecast result for dataset={result.dataset_id}, series={result.series_id}")
+    except Exception as ex:
+        logger.warning(f"Error persisting forecast to MongoDB: {ex}")
+
+
 @router.post("/forecast/arima", response_model=ForecastResult)
 def generate_arima_forecast(
     dataset_id: str = Query(...),
@@ -571,6 +638,7 @@ def generate_arima_forecast(
     try:
         forecaster.fit(series_df, time_col=time_col, target_col=target_col, horizon=horizon)
         result = forecaster.forecast(horizon=horizon, dataset_id=dataset_id, series_id=series_id)
+        _persist_forecast(result)
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -605,6 +673,7 @@ def generate_sarima_forecast(
     try:
         forecaster.fit(series_df, time_col=time_col, target_col=target_col, horizon=horizon)
         result = forecaster.forecast(horizon=horizon, dataset_id=dataset_id, series_id=series_id)
+        _persist_forecast(result)
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -634,6 +703,7 @@ def generate_prophet_forecast(
     try:
         forecaster.fit(series_df, time_col=time_col, target_col=target_col, horizon=horizon)
         result = forecaster.forecast(horizon=horizon, dataset_id=dataset_id, series_id=series_id)
+        _persist_forecast(result)
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -665,6 +735,7 @@ def generate_lightgbm_forecast(
     try:
         forecaster.fit(series_df, time_col=time_col, target_col=target_col, horizon=horizon)
         result = forecaster.forecast(horizon=horizon, dataset_id=dataset_id, series_id=series_id)
+        _persist_forecast(result)
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -698,6 +769,7 @@ def generate_deepar_forecast(
     try:
         forecaster.fit(series_df, time_col=time_col, target_col=target_col, horizon=horizon)
         result = forecaster.forecast(horizon=horizon, dataset_id=dataset_id, series_id=series_id)
+        _persist_forecast(result)
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
@@ -731,6 +803,7 @@ def generate_tft_forecast(
     try:
         forecaster.fit(series_df, time_col=time_col, target_col=target_col, horizon=horizon)
         result = forecaster.forecast(horizon=horizon, dataset_id=dataset_id, series_id=series_id)
+        _persist_forecast(result)
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))

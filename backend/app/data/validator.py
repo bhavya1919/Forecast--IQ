@@ -32,15 +32,12 @@ def validate_schema_and_series(
     date_col = mapping.get("date", "")
     series_col = mapping.get("series_id", "")
     target_col = mapping.get("target", "")
+    composite_keys = mapping.get("composite_series_keys") or []
 
-    # 1. Check Mandatory Column Existence
+    # 1. Check Mandatory Column Existence (Only date and target are mandatory inputs)
     if not date_col or date_col not in df.columns:
         missing_mandatory.append("date")
         errors.append("Mandatory column 'date' is missing or unmapped.")
-
-    if not series_col or series_col not in df.columns:
-        missing_mandatory.append("series_id")
-        errors.append("Mandatory column 'series_id' is missing or unmapped.")
 
     if not target_col or target_col not in df.columns:
         missing_mandatory.append("target")
@@ -70,12 +67,40 @@ def validate_schema_and_series(
         if invalid_dates_count > 0:
             errors.append(f"Date column '{date_col}' contains {invalid_dates_count} unparseable or malformed date value(s).")
 
-    # 3. Series ID Column Validation
+    # 3. Series ID Column / Composite Keys / Single Series Validation
+    # Build effective series column representation
+    effective_series_name = series_col
+    effective_series_series = None
+
     if series_col and series_col in df.columns:
-        series_series = df[series_col]
-        empty_series_count = int(series_series.isna().sum()) + int((series_series.dropna().astype(str).str.strip().isin(["", "nan", "none", "null"])).sum())
+        effective_series_series = df[series_col]
+        empty_series_count = int(effective_series_series.isna().sum()) + int((effective_series_series.dropna().astype(str).str.strip().isin(["", "nan", "none", "null"])).sum())
         if empty_series_count > 0:
             errors.append(f"Series ID column '{series_col}' contains {empty_series_count} empty or null series identifier(s).")
+    elif composite_keys and all(ck in df.columns for ck in composite_keys):
+        effective_series_name = "__composite_series__"
+        # Synthesize composite series representation
+        effective_series_series = df[composite_keys].astype(str).agg("__".join, axis=1)
+    else:
+        # No explicit series_id and no composite keys
+        # Check if dataset appears to be single series or ambiguous multi-series
+        if date_col in df.columns and parsed_dates is not None:
+            # Check for duplicate timestamps in raw dataset (excluding exact duplicates)
+            dedup_df = df.drop_duplicates()
+            date_counts = dedup_df[date_col].value_counts()
+            max_obs_per_date = int(date_counts.max()) if not date_counts.empty else 1
+            if max_obs_per_date > 1:
+                # Ambiguous duplicate dates detected without an identifier!
+                conflicting_dates = int((date_counts > 1).sum())
+                errors.append(
+                    f"Ambiguous observations detected: {conflicting_dates} timestamp(s) have multiple distinct rows, "
+                    "but no 'series_id' or entity identification columns (e.g. store_id, item_id) were mapped. "
+                    "Please map an identifier or composite keys to prevent incorrectly combining separate time series."
+                )
+            else:
+                # Confirmed single series: assign internal default_series
+                effective_series_name = "default_series"
+                effective_series_series = pd.Series(["default_series"] * len(df), index=df.index)
 
     # 4. Target Column Validation
     if target_col and target_col in df.columns:
@@ -108,14 +133,14 @@ def validate_schema_and_series(
                     warnings.append(f"Detected {high_outliers} extreme demand spike(s) (> 3x IQR). Review for holiday promotions vs abnormal data errors.")
 
     # 5. Timestamp Conflict Detection (series_id + date duplicates)
-    if date_col in df.columns and series_col in df.columns and parsed_dates is not None:
-        sub = pd.DataFrame({"series": df[series_col], "date": parsed_dates})
+    if date_col in df.columns and effective_series_series is not None and parsed_dates is not None:
+        sub = pd.DataFrame({"series": effective_series_series, "date": parsed_dates})
         conflicting_records_count = int(sub.duplicated().sum())
         if conflicting_records_count > 0:
-            errors.append(f"Detected {conflicting_records_count} conflicting record(s) where the same series_id has duplicate observations on the same timestamp.")
+            errors.append(f"Detected {conflicting_records_count} conflicting record(s) where the same series has duplicate observations on the same timestamp.")
 
     # 6. Frequency Check Warning
-    freq_label, freq_warn = detect_series_frequency(df, date_col, series_col)
+    freq_label, freq_warn = detect_series_frequency(df, date_col, series_col if (series_col and series_col in df.columns) else "")
     if freq_warn:
         warnings.append(freq_warn)
 
@@ -124,10 +149,10 @@ def validate_schema_and_series(
     series_with_gaps = 0
     obs_counts: List[int] = []
 
-    if series_col in df.columns and date_col in df.columns and parsed_dates is not None:
-        valid_mask = parsed_dates.notna() & df[series_col].notna()
+    if effective_series_series is not None and date_col in df.columns and parsed_dates is not None:
+        valid_mask = parsed_dates.notna() & effective_series_series.notna()
         work_df = pd.DataFrame({
-            "series": df.loc[valid_mask, series_col].astype(str),
+            "series": effective_series_series.loc[valid_mask].astype(str),
             "date": parsed_dates.loc[valid_mask]
         })
 
@@ -189,7 +214,7 @@ def validate_schema_and_series(
     )
 
     # 8. Determine Overall Status
-    if missing_mandatory or invalid_dates_count > 0 or invalid_target_count > 0 or conflicting_records_count > 5:
+    if missing_mandatory or errors or invalid_dates_count > 0 or invalid_target_count > 0 or conflicting_records_count > 5:
         overall_status = ReadinessStatus.NEEDS_ATTENTION
         if missing_mandatory:
             overall_status = ReadinessStatus.INVALID
@@ -206,8 +231,10 @@ def validate_schema_and_series(
         missing_mandatory_fields=missing_mandatory,
         mapped_fields=ColumnMapping(
             date=date_col,
-            series_id=series_col,
+            series_id=series_col or (composite_keys[0] if composite_keys else "default_series"),
             target=target_col,
+            composite_series_keys=composite_keys,
+            candidate_entity_columns=mapping.get("candidate_entity_columns", []),
             optional=mapping.get("optional", {})
         ),
         exact_duplicate_rows=exact_duplicates_count,

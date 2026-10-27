@@ -30,7 +30,7 @@ from ..forecasting.engine import ModelRegistry, UnifiedForecastEngine
 from ..forecasting.horizon import HorizonManager
 from ..data.schema import ForecastRequest
 from ..data.loader import get_dataset, detect_candidate_columns
-from ..data.cleaner import CLEANED_DATASET_STORE
+from ..data.cleaner import CLEANED_DATASET_STORE, split_series_chronological_80_20
 
 logger = logging.getLogger("forecastiq.evaluation.backtesting")
 
@@ -228,7 +228,31 @@ class BacktestingEngine:
 
         overall_metrics = EvaluationMetrics.evaluate_forecast(all_actuals, all_predictions)
 
-        return {
+        # 80:20 Chronological Split Evaluation metrics
+        holdout_eval: Optional[Dict[str, Any]] = None
+        try:
+            tr_df, te_df = split_series_chronological_80_20(series_df, time_col=time_col, train_ratio=0.8)
+            if len(tr_df) >= horizon and len(te_df) >= horizon:
+                forecaster_holdout = ModelRegistry.create(model_name, **model_kwargs)
+                forecaster_holdout.fit(tr_df, time_col=time_col, target_col=target_col, horizon=horizon)
+                h_res = forecaster_holdout.forecast(horizon=horizon, dataset_id=dataset_id, series_id=series_id)
+                actual_holdout = [float(v) for v in te_df[target_col].iloc[:horizon].values]
+                pred_holdout = h_res.forecast[:horizon]
+                h_metrics = EvaluationMetrics.evaluate_forecast(actual_holdout, pred_holdout)
+                holdout_eval = {
+                    "split_policy": "80:20_chronological",
+                    "train_obs": len(tr_df),
+                    "test_obs": len(te_df),
+                    "horizon": horizon,
+                    "train_end": str(tr_df[time_col].iloc[-1])[:10],
+                    "test_start": str(te_df[time_col].iloc[0])[:10],
+                    "mape": h_metrics["mape"],
+                    "rmse": h_metrics["rmse"],
+                }
+        except Exception:
+            holdout_eval = None
+
+        res_dict = {
             "dataset_id": dataset_id,
             "series_id": series_id,
             "model": model_name,
@@ -243,7 +267,11 @@ class BacktestingEngine:
             "sample_count": overall_metrics["sample_count"],
             "execution_time_ms": round(total_exec_time, 2),
             "folds": fold_evaluations,
+            "split_policy": "80:20_chronological",
         }
+        if holdout_eval:
+            res_dict["holdout_80_20_eval"] = holdout_eval
+        return res_dict
 
     @classmethod
     def run_backtest_suite(
@@ -265,12 +293,28 @@ class BacktestingEngine:
         if not entry:
             raise ValueError(f"Dataset with ID '{dataset_id}' not found.")
 
-        df = entry["df"]
+        df = entry["df"].copy()
         mapping = entry.get("mapping") or detect_candidate_columns(list(df.columns))
         series_col = mapping.get("series_id") or "series_id"
-        if series_col not in df.columns:
-            detected = detect_candidate_columns(list(df.columns)).get("series_id")
-            series_col = detected if detected and detected in df.columns else df.columns[0]
+        composite_keys = mapping.get("composite_series_keys") or []
+
+        if composite_keys and all(ck in df.columns for ck in composite_keys) and series_col not in df.columns:
+            df["series_id"] = df[composite_keys].astype(str).agg("__".join, axis=1)
+            series_col = "series_id"
+        elif series_col not in df.columns:
+            # Check if any candidate entity column in df matches requested series_ids
+            matched_col = None
+            if series_ids:
+                for col in mapping.get("candidate_entity_columns") or []:
+                    if col in df.columns and any(str(s) in df[col].astype(str).values for s in series_ids):
+                        matched_col = col
+                        break
+            if matched_col:
+                df["series_id"] = df[matched_col].astype(str)
+                series_col = "series_id"
+            else:
+                df["series_id"] = "default_series"
+                series_col = "series_id"
 
         # Resolve optional scope columns
         store_col = mapping.get("optional", {}).get("store_id") if isinstance(mapping.get("optional"), dict) else None
@@ -380,9 +424,11 @@ class BacktestingEngine:
 
         try:
             from ..db.mongo import MongoRepository
-            MongoRepository.save_evaluation_comparison(dataset_id, comparison_data, scope_key=scope_key)
-        except Exception:
-            pass
+            saved = MongoRepository.save_evaluation_comparison(dataset_id, comparison_data, scope_key=scope_key)
+            if not saved:
+                logger.warning(f"MongoRepository.save_evaluation_comparison returned False for dataset_id={dataset_id}")
+        except Exception as ex:
+            logger.warning(f"Failed to persist evaluation comparison to MongoDB for dataset_id={dataset_id}: {ex}")
 
         return comparison_data
 
@@ -518,6 +564,7 @@ class BacktestingEngine:
             "table_3_series_evaluations": ranked_series_evals,
             "best_per_horizon": best_per_horizon,
             "best_model_overall": best_overall,
+            "split_policy": "80:20_chronological",
             "series_details": series_evaluations,
         }
 
@@ -584,11 +631,15 @@ class BacktestingEngine:
 
         try:
             from ..db.mongo import MongoRepository
+            # Check MongoDB for matching evaluation document
             db_res = MongoRepository.get_evaluation_comparison(dataset_id)
             if db_res:
+                # Populate in-memory cache so subsequent reads are immediate
+                res_scope_key = db_res.get("scope_key") or "default"
+                EVALUATION_CACHE[f"{dataset_id}|{res_scope_key}"] = db_res
                 return db_res
-        except Exception:
-            pass
+        except Exception as ex:
+            logger.warning(f"Error fetching evaluation from MongoDB for dataset_id={dataset_id}: {ex}")
 
         return None
 

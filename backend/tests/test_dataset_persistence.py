@@ -172,3 +172,49 @@ def test_get_nonexistent_dataset_returns_none():
 
         r = client.get("/api/data/non_existent_dataset_999/preview")
         assert r.status_code == 404
+
+
+def test_forecast_and_evaluation_persistence_in_mongo():
+    """Verify that forecast endpoints and evaluation endpoints persist results to MongoDB."""
+    mock_db = MagicMock()
+    eval_docs = {}
+    forecast_docs = {}
+
+    def fake_eval_update(query, update, upsert=False):
+        eval_docs[query["dataset_id"]] = update["$set"]
+        return MagicMock()
+
+    def fake_forecast_update(query, update, upsert=False):
+        forecast_docs[query["dataset_id"]] = update["$set"]
+        return MagicMock()
+
+    mock_db.evaluations.update_one.side_effect = fake_eval_update
+    mock_db.forecast_results.update_one.side_effect = fake_forecast_update
+
+    with patch.object(MongoManager, "get_db", return_value=mock_db):
+        ds_id = "test_persist_ds_1"
+        df = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=60, freq="D"),
+            "series_id": ["S1"] * 60,
+            "target": [float(i) for i in range(60)]
+        })
+        save_dataset(ds_id, df, "test_p.csv")
+
+        # 1. Test forecast route persists
+        r_fc = client.post(f"/api/forecast/arima?dataset_id={ds_id}&series_id=S1&horizon=7")
+        assert r_fc.status_code == 200
+        assert ds_id in forecast_docs
+        assert forecast_docs[ds_id]["forecast_horizon"] == 7
+
+        # 2. Test evaluation backtest persists
+        r_bt = client.post("/api/evaluation/backtest", json={
+            "dataset_id": ds_id,
+            "series_ids": ["S1"],
+            "models": ["arima"],
+            "horizons": [7],
+            "n_folds": 2
+        })
+        assert r_bt.status_code == 200
+        assert ds_id in eval_docs
+        assert "arima" in eval_docs[ds_id]["models_evaluated"]
+

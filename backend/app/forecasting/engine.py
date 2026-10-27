@@ -117,12 +117,18 @@ class UnifiedForecastEngine:
         df = entry["df"]
         mapping = entry.get("mapping") or detect_candidate_columns(list(df.columns))
 
-        series_col = mapping.get("series_id", "series_id")
+        series_col = mapping.get("series_id") or "series_id"
         date_col = mapping.get("date", "date")
         target_col = mapping.get("target", "target")
+        composite_keys = mapping.get("composite_series_keys") or []
 
-        if series_col not in df.columns:
-            raise ValueError(f"Series ID column '{series_col}' not found in dataset.")
+        if composite_keys and all(ck in df.columns for ck in composite_keys) and series_col not in df.columns:
+            df["series_id"] = df[composite_keys].astype(str).agg("__".join, axis=1)
+            series_col = "series_id"
+        elif series_col not in df.columns:
+            df["series_id"] = "default_series"
+            series_col = "series_id"
+
         if date_col not in df.columns:
             raise ValueError(f"Date column '{date_col}' not found in dataset.")
         if target_col not in df.columns:
@@ -350,9 +356,11 @@ class UnifiedForecastEngine:
 
         try:
             from ..db.mongo import MongoRepository
-            MongoRepository.save_forecast_result(result.model_dump())
-        except Exception:
-            pass
+            saved = MongoRepository.save_forecast_result(result.model_dump())
+            if not saved:
+                logger.warning(f"MongoRepository.save_forecast_result returned False for dataset={req.dataset_id}, series={req.series_id}")
+        except Exception as ex:
+            logger.warning(f"Failed to persist forecast result to MongoDB for dataset={req.dataset_id}: {ex}")
 
         return result
 

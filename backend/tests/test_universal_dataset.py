@@ -29,7 +29,7 @@ from app.data.profiler import profile_dataset, detect_series_frequency
 from app.data.validator import validate_schema_and_series
 from app.features.analyzer import analyze_features
 from app.data.adapters.m5_adapter import M5Adapter
-from app.data.cleaner import evaluate_dataset_readiness
+from app.data.cleaner import evaluate_dataset_readiness, clean_canonical_dataset
 
 
 # 1. Valid canonical CSV
@@ -68,19 +68,38 @@ STORE_1_ITEM_A,45.0,2.50
     assert val_report.status == ReadinessStatus.INVALID
 
 
-# 3. Missing series_id
-def test_missing_series_id():
+# 3. Optional series_id (Single Series vs Ambiguous Multi-Series)
+def test_optional_series_id_single_series():
     csv_bytes = b"""date,target,price
 2024-01-01,42.0,2.50
 2024-01-02,45.0,2.50
+2024-01-03,48.0,2.50
 """
-    dataset_id, df = load_csv_from_bytes(csv_bytes, "missing_series.csv")
+    dataset_id, df = load_csv_from_bytes(csv_bytes, "single_series.csv")
+    mapping = detect_candidate_columns(list(df.columns))
+    val_report, summary = validate_schema_and_series(dataset_id, df, mapping)
+    
+    assert "date" not in val_report.missing_mandatory_fields
+    assert "target" not in val_report.missing_mandatory_fields
+    assert len(val_report.missing_mandatory_fields) == 0
+    assert val_report.status == ReadinessStatus.READY
+    assert summary.total_series == 1
+    assert summary.sample_series_quality[0].series_id == "default_series"
+
+
+def test_missing_series_id_with_ambiguous_dates():
+    # Multiple distinct records on the same date without series_id must NOT be silently combined
+    csv_bytes = b"""date,target,price
+2024-01-01,42.0,2.50
+2024-01-01,15.0,3.00
+2024-01-02,45.0,2.50
+"""
+    dataset_id, df = load_csv_from_bytes(csv_bytes, "ambiguous_series.csv")
     mapping = detect_candidate_columns(list(df.columns))
     val_report, _ = validate_schema_and_series(dataset_id, df, mapping)
     
-    assert "series_id" in val_report.missing_mandatory_fields
-    assert any("series_id" in err.lower() for err in val_report.errors)
-    assert val_report.status == ReadinessStatus.INVALID
+    assert any("ambiguous" in err.lower() for err in val_report.errors)
+    assert val_report.status == ReadinessStatus.NEEDS_ATTENTION
 
 
 # 4. Missing target
@@ -297,3 +316,229 @@ def test_dataset_readiness_evaluation():
     assert report.supported_horizons["h28"].status == "Borderline" or report.supported_horizons["h28"].status == "Supported"
     assert len(report.readiness_checklist) == 5
     assert all(item["passed"] for item in report.readiness_checklist)
+
+
+# 15. Single-series CSV with only date and target (no series_id)
+def test_upload_and_clean_single_series_only_date_target():
+    dates = pd.date_range("2024-01-01", periods=45, freq="D")
+    csv_str = "date,target\n" + "\n".join(f"{d.strftime('%Y-%m-%d')},{i + 10}" for i, d in enumerate(dates))
+    dataset_id, df = load_csv_from_bytes(csv_str.encode("utf-8"), "univariate.csv")
+    mapping = detect_candidate_columns(list(df.columns))
+
+    val_report, summary = validate_schema_and_series(dataset_id, df, mapping)
+    assert val_report.status == ReadinessStatus.READY
+    assert len(val_report.errors) == 0
+
+    cleaned_df, clean_rep = clean_canonical_dataset(dataset_id, df, mapping)
+    assert "series_id" in cleaned_df.columns
+    assert (cleaned_df["series_id"] == "default_series").all()
+    assert clean_rep.cleaned_rows == 45
+
+
+# 16. Composite identifier generation from store_id + item_id
+def test_composite_identifier_generation():
+    csv_bytes = b"""date,store_id,item_id,target,price
+2024-01-01,STORE_1,ITEM_A,10,2.5
+2024-01-02,STORE_1,ITEM_A,12,2.5
+2024-01-01,STORE_1,ITEM_B,20,3.0
+2024-01-02,STORE_1,ITEM_B,22,3.0
+"""
+    dataset_id, df = load_csv_from_bytes(csv_bytes, "composite.csv")
+    mapping = detect_candidate_columns(list(df.columns))
+    assert "store_id" in mapping["candidate_entity_columns"]
+    assert "item_id" in mapping["candidate_entity_columns"]
+    assert "price" not in mapping["candidate_entity_columns"]
+
+    # Provide composite keys mapping
+    mapping["composite_series_keys"] = ["store_id", "item_id"]
+    val_report, summary = validate_schema_and_series(dataset_id, df, mapping)
+    assert val_report.status == ReadinessStatus.READY
+    assert summary.total_series == 2
+
+    cleaned_df, clean_rep = clean_canonical_dataset(dataset_id, df, mapping)
+    assert "series_id" in cleaned_df.columns
+    unique_series = set(cleaned_df["series_id"].unique())
+    assert unique_series == {"STORE_1__ITEM_A", "STORE_1__ITEM_B"}
+
+
+# 17. Phase 2: Single series with 1,000 observations produces exactly 800 train and 200 test observations
+def test_80_20_split_1000_observations():
+    from app.data.cleaner import split_series_chronological_80_20, split_dataset_chronological_80_20, compute_chronological_splits
+
+    dates = pd.date_range("2020-01-01", periods=1000, freq="D")
+    df = pd.DataFrame({
+        "date": dates,
+        "series_id": "SERIES_1K",
+        "target": np.random.uniform(10, 100, 1000)
+    })
+    mapping = {"date": "date", "series_id": "series_id", "target": "target"}
+
+    tr, te = split_series_chronological_80_20(df, time_col="date", train_ratio=0.8)
+    assert len(tr) == 800
+    assert len(te) == 200
+    assert len(tr) + len(te) == 1000
+
+    # Test through compute_chronological_splits
+    report = compute_chronological_splits("ds_1k", df, mapping, use_80_20_ratio=True)
+    assert report.train_row_count == 800
+    assert report.test_row_count == 200
+    assert report.split_ratio == "80:20"
+
+
+# 18. Phase 2: Strict chronological order: all training dates precede all test dates
+def test_80_20_split_chronological_order():
+    from app.data.cleaner import split_series_chronological_80_20
+
+    dates = pd.date_range("2023-01-01", periods=100, freq="D")
+    df = pd.DataFrame({
+        "date": dates,
+        "series_id": "SERIES_CHRONO",
+        "target": np.arange(100)
+    })
+    # Intentionally shuffle input DataFrame to verify function sorts chronologically before splitting
+    shuffled_df = df.sample(frac=1.0, random_state=42).reset_index(drop=True)
+
+    tr, te = split_series_chronological_80_20(shuffled_df, time_col="date", train_ratio=0.8)
+    assert len(tr) == 80
+    assert len(te) == 20
+    assert tr["date"].max() < te["date"].min()
+    assert (tr["date"].diff().dropna() > pd.Timedelta(0)).all()
+    assert (te["date"].diff().dropna() > pd.Timedelta(0)).all()
+
+
+# 19. Phase 2: Split rounding policy when observation counts are not divisible by five
+def test_80_20_split_not_divisible_by_five():
+    from app.data.cleaner import split_series_chronological_80_20
+
+    # 101 observations: 101 * 0.8 = 80.8 -> round to 81 train, 20 test
+    df_101 = pd.DataFrame({
+        "date": pd.date_range("2023-01-01", periods=101, freq="D"),
+        "target": np.ones(101)
+    })
+    tr_101, te_101 = split_series_chronological_80_20(df_101, time_col="date", train_ratio=0.8)
+    assert len(tr_101) == 81
+    assert len(te_101) == 20
+    assert len(tr_101) + len(te_101) == 101
+
+    # 103 observations: 103 * 0.8 = 82.4 -> round to 82 train, 21 test
+    df_103 = pd.DataFrame({
+        "date": pd.date_range("2023-01-01", periods=103, freq="D"),
+        "target": np.ones(103)
+    })
+    tr_103, te_103 = split_series_chronological_80_20(df_103, time_col="date", train_ratio=0.8)
+    assert len(tr_103) == 82
+    assert len(te_103) == 21
+    assert len(tr_103) + len(te_103) == 103
+
+    # 7 observations: 7 * 0.8 = 5.6 -> round to 6 train, 1 test
+    df_7 = pd.DataFrame({
+        "date": pd.date_range("2023-01-01", periods=7, freq="D"),
+        "target": np.ones(7)
+    })
+    tr_7, te_7 = split_series_chronological_80_20(df_7, time_col="date", train_ratio=0.8)
+    assert len(tr_7) == 6
+    assert len(te_7) == 1
+
+
+# 20. Phase 2: Dataset without uploaded series_id uses internal default_series correctly
+def test_80_20_split_internal_default_series():
+    from app.data.cleaner import split_dataset_chronological_80_20, compute_chronological_splits
+
+    dates = pd.date_range("2023-01-01", periods=50, freq="D")
+    df = pd.DataFrame({
+        "date": dates,
+        "target": np.random.uniform(5, 50, 50)
+    })
+    mapping = {"date": "date", "target": "target"}
+
+    tr, te = split_dataset_chronological_80_20(df, mapping=mapping, train_ratio=0.8)
+    assert len(tr) == 40
+    assert len(te) == 10
+    assert "series_id" in tr.columns
+    assert (tr["series_id"] == "default_series").all()
+    assert (te["series_id"] == "default_series").all()
+
+    report = compute_chronological_splits("ds_no_series", df, mapping, use_80_20_ratio=True)
+    assert report.train_row_count == 40
+    assert report.test_row_count == 10
+
+
+# 21. Phase 2: Multi-series separation and independent chronological ordering
+def test_80_20_split_multi_series_separation():
+    from app.data.cleaner import split_dataset_chronological_80_20
+
+    dates = pd.date_range("2023-01-01", periods=50, freq="D")
+    df1 = pd.DataFrame({"date": dates, "series_id": "SERIES_A", "target": 10.0})
+    df2 = pd.DataFrame({"date": dates, "series_id": "SERIES_B", "target": 20.0})
+    combined = pd.concat([df1, df2], ignore_index=True)
+    mapping = {"date": "date", "series_id": "series_id", "target": "target"}
+
+    tr, te = split_dataset_chronological_80_20(combined, mapping=mapping, train_ratio=0.8)
+    assert len(tr) == 80  # 40 per series * 2
+    assert len(te) == 20  # 10 per series * 2
+
+    # Verify per-series temporal integrity
+    for s_id in ["SERIES_A", "SERIES_B"]:
+        s_tr = tr[tr["series_id"] == s_id]
+        s_te = te[te["series_id"] == s_id]
+        assert len(s_tr) == 40
+        assert len(s_te) == 10
+        assert s_tr["date"].max() < s_te["date"].min()
+
+
+# 22. Phase 2: No future observations leak into training features or preprocessing
+def test_no_data_leakage_in_features():
+    from app.features.engineer import engineer_time_series_features
+
+    dates = pd.date_range("2023-01-01", periods=10, freq="D")
+    df = pd.DataFrame({
+        "date": dates,
+        "series_id": "S_LEAK_CHECK",
+        "target": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+    })
+    mapping = {"date": "date", "series_id": "series_id", "target": "target"}
+    feat_df = engineer_time_series_features(df, mapping, lag_list=[1, 2], rolling_windows=[3])
+
+    # First day target_lag_1 must be NaN (cannot look into nonexistent past or future)
+    assert pd.isna(feat_df.loc[0, "target_lag_1"])
+    # Day 1 target_lag_1 must be Day 0 target (10.0)
+    assert feat_df.loc[1, "target_lag_1"] == 10.0
+    # Day 2 target_lag_2 must be Day 0 target (10.0)
+    assert feat_df.loc[2, "target_lag_2"] == 10.0
+    # 3-day rolling mean shifted by 1 to prevent current-step target leakage:
+    # At day 2: shifted past observations are day 0 (10) and day 1 (20) -> mean(10, 20) = 15.0
+    assert feat_df.loc[2, "rolling_mean_3"] == 15.0
+    # At day 3: shifted past observations are day 0 (10), day 1 (20), day 2 (30) -> mean(10, 20, 30) = 20.0
+    assert feat_df.loc[3, "rolling_mean_3"] == 20.0
+
+
+# 23. Phase 2: Evaluation engine reports split_policy and holdout_80_20_eval
+def test_evaluation_engine_80_20_policy():
+    from app.evaluation.backtesting import BacktestingEngine
+
+    dates = pd.date_range("2023-01-01", periods=100, freq="D")
+    df = pd.DataFrame({
+        "date": dates,
+        "series_id": "SERIES_EVAL_POLICY",
+        "target": np.random.uniform(50, 100, 100)
+    })
+    mapping = {"date": "date", "series_id": "series_id", "target": "target"}
+
+    eval_res = BacktestingEngine.evaluate_model_on_series(
+        dataset_id="DS_EVAL_POL",
+        series_id="SERIES_EVAL_POLICY",
+        model_name="arima",
+        horizon=7,
+        series_df=df,
+        mapping=mapping,
+        n_folds=1,
+    )
+    assert eval_res["status"] == "SUCCESS"
+    assert eval_res["split_policy"] == "80:20_chronological"
+    assert "holdout_80_20_eval" in eval_res
+    h_eval = eval_res["holdout_80_20_eval"]
+    assert h_eval["train_obs"] == 80
+    assert h_eval["test_obs"] == 20
+    assert h_eval["horizon"] == 7
+    assert h_eval["mape"] is not None
+    assert h_eval["rmse"] is not None

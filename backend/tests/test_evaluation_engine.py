@@ -610,4 +610,29 @@ def test_365_day_dataset_90d_walk_forward_backtesting():
     assert best_90["mape"] is not None and best_90["mape"] > 0
 
 
+# 25. Single-series dataset backtest evaluation without series_id
+def test_single_series_backtesting_suite():
+    ds_id = "DS_SINGLE_SERIES_SUITE"
+    dates = pd.date_range("2024-01-01", periods=100, freq="D")
+    df = pd.DataFrame({
+        "date": dates.strftime("%Y-%m-%d"),
+        "target": np.linspace(20, 60, 100) + np.random.normal(0, 0.5, 100)
+    })
+    save_dataset(ds_id, df, "single_series.csv")
+
+    suite = BacktestingEngine.run_backtest_suite(
+        dataset_id=ds_id,
+        models=["arima"],
+        horizons=[7, 28],
+        n_folds=2,
+    )
+
+    assert suite["total_series_evaluated"] == 1
+    assert "7D" in suite["horizons_evaluated"]
+    assert "28D" in suite["horizons_evaluated"]
+    assert suite["table_1_model_x_horizon_mape"]["arima"]["7D"] is not None
+    assert suite["table_1_model_x_horizon_mape"]["arima"]["28D"] is not None
+    assert suite["table_3_series_evaluations"][0]["series_id"] == "default_series"
+
+
 

@@ -49,11 +49,22 @@ def clean_canonical_dataset(
     original_rows = len(df)
     
     date_col = mapping.get("date", "date")
-    series_col = mapping.get("series_id", "series_id")
+    series_col = mapping.get("series_id") or "series_id"
     target_col = mapping.get("target", "target")
+    composite_keys = mapping.get("composite_series_keys") or []
 
     # Work on a copy
     work_df = df.copy()
+
+    # Step 0: Ensure internal series identification column exists
+    if composite_keys and all(ck in work_df.columns for ck in composite_keys):
+        series_col = "series_id"
+        work_df[series_col] = work_df[composite_keys].astype(str).agg("__".join, axis=1)
+        notes.append(f"Constructed composite internal series identifier from columns: {', '.join(composite_keys)}.")
+    elif series_col not in work_df.columns or work_df[series_col].isna().all():
+        series_col = "series_id"
+        work_df[series_col] = "default_series"
+        notes.append("Assigned verified single-series internal identifier 'default_series'.")
 
     # Step 1: Remove exact duplicate rows
     initial_len = len(work_df)
@@ -275,10 +286,19 @@ def analyze_series_quality(
     - horizon feasibility: 7D (>= 28 obs), 28D (>= 90 obs), 90D (>= 180 obs)
     """
     date_col = mapping.get("date", "date")
-    series_col = mapping.get("series_id", "series_id")
+    series_col = mapping.get("series_id") or "series_id"
     target_col = mapping.get("target", "target")
+    composite_keys = mapping.get("composite_series_keys") or []
 
-    if series_col not in df.columns or date_col not in df.columns:
+    work_df = df.copy()
+    if composite_keys and all(ck in work_df.columns for ck in composite_keys):
+        series_col = "series_id"
+        work_df[series_col] = work_df[composite_keys].astype(str).agg("__".join, axis=1)
+    elif series_col not in work_df.columns:
+        series_col = "series_id"
+        work_df[series_col] = "default_series"
+
+    if date_col not in work_df.columns:
         return SeriesQualityAnalysisReport(
             dataset_id=dataset_id,
             total_series=0,
@@ -396,55 +416,161 @@ def analyze_series_quality(
     )
 
 
+def split_series_chronological_80_20(
+    series_df: pd.DataFrame,
+    time_col: str = "date",
+    train_ratio: float = 0.8,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Split a single series chronologically into train (earliest 80%) and test (latest 20%).
+    
+    Rounding policy:
+    - n_train = int(np.round(total_obs * train_ratio))
+    - When not divisible by 5 (e.g. 101 obs): round(101 * 0.8) = round(80.8) = 81 train, 20 test.
+    - Guarantees: n_train >= 1 and n_test >= 1 for any series with total_obs >= 2.
+    - Never random shuffles.
+    - Preserves temporal order: all train dates precede all test dates.
+    """
+    sorted_df = series_df.sort_values(by=time_col).reset_index(drop=True)
+    total_obs = len(sorted_df)
+    if total_obs == 0:
+        return sorted_df.copy(), sorted_df.copy()
+    if total_obs == 1:
+        return sorted_df.copy(), sorted_df.iloc[0:0].copy()
+
+    n_train = int(np.round(total_obs * train_ratio))
+    n_train = max(1, min(n_train, total_obs - 1))
+    train_df = sorted_df.iloc[:n_train].copy().reset_index(drop=True)
+    test_df = sorted_df.iloc[n_train:].copy().reset_index(drop=True)
+    return train_df, test_df
+
+
+def split_dataset_chronological_80_20(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    train_ratio: float = 0.8,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Universal Chronological 80:20 Train-Test Split for single-series and multi-series datasets.
+    
+    Multi-series policy:
+    - Splits each distinct series chronologically by its own temporal timestamps.
+    - Preserves each series' temporal continuity and ordering without inter-series leakage.
+    - Recombines into overall train_df and test_df while maintaining series identities.
+    - Missing series_id is handled via Phase 1 internal resolution ('default_series' or composite keys).
+    """
+    time_col = mapping.get("date", "date")
+    series_col = mapping.get("series_id", "series_id")
+    composite_keys = mapping.get("composite_series_keys") or []
+
+    work_df = df.copy()
+    work_df[time_col] = pd.to_datetime(work_df[time_col], errors="coerce")
+    work_df = work_df.dropna(subset=[time_col])
+
+    # Ensure internal series_id is populated if missing
+    if composite_keys and all(ck in work_df.columns for ck in composite_keys) and series_col not in work_df.columns:
+        work_df["series_id"] = work_df[composite_keys].astype(str).agg("__".join, axis=1)
+        series_col = "series_id"
+    elif series_col not in work_df.columns:
+        work_df["series_id"] = "default_series"
+        series_col = "series_id"
+
+    train_parts = []
+    test_parts = []
+
+    for _, s_group in work_df.groupby(series_col, sort=False):
+        tr, te = split_series_chronological_80_20(s_group, time_col=time_col, train_ratio=train_ratio)
+        train_parts.append(tr)
+        test_parts.append(te)
+
+    train_df = pd.concat(train_parts, ignore_index=True) if train_parts else work_df.iloc[0:0].copy()
+    test_df = pd.concat(test_parts, ignore_index=True) if test_parts else work_df.iloc[0:0].copy()
+
+    return train_df, test_df
+
+
 def compute_chronological_splits(
     dataset_id: str,
     df: pd.DataFrame,
     mapping: Dict[str, Any],
-    test_horizon_days: int = 28,
-    val_horizon_days: int = 14,
+    test_horizon_days: Optional[int] = None,
+    val_horizon_days: Optional[int] = None,
+    use_80_20_ratio: bool = True,
 ) -> SplitReport:
     """
-    Time-Based Train / Val / Test Split:
-    Strictly chronological: [--- TRAIN ---][-- VAL --][-- TEST --]
-    Never random shuffle.
-    Guarantees test period covers the target forecast horizon.
+    Universal Time-Based Chronological Split:
+    Default: Universal 80:20 train-test split policy.
+    Earliest 80% of observations for training; latest 20% for testing.
+    Never random shuffle. Strictly preserves temporal order per series.
+    Also supports explicit test_horizon_days / val_horizon_days when requested by legacy callers.
     """
     date_col = mapping.get("date", "date")
     series_col = mapping.get("series_id", "series_id")
+    composite_keys = mapping.get("composite_series_keys") or []
 
     work_df = df.copy()
     work_df[date_col] = pd.to_datetime(work_df[date_col], errors="coerce")
     work_df = work_df.dropna(subset=[date_col]).sort_values(by=date_col)
 
+    if composite_keys and all(ck in work_df.columns for ck in composite_keys) and series_col not in work_df.columns:
+        work_df["series_id"] = work_df[composite_keys].astype(str).agg("__".join, axis=1)
+        series_col = "series_id"
+    elif series_col not in work_df.columns:
+        work_df["series_id"] = "default_series"
+        series_col = "series_id"
+
     all_dates = pd.Series(work_df[date_col].unique()).sort_values().reset_index(drop=True)
     total_dates = len(all_dates)
 
-    if total_dates < (test_horizon_days + val_horizon_days + 7):
-        # Adaptive fallback when dataset is compact
-        test_days = max(1, int(total_dates * 0.15))
-        val_days = max(1, int(total_dates * 0.15))
+    # If caller specifically passed explicit horizons (e.g. test_horizon=28, val_horizon=14)
+    # AND strategy is not explicitly "80:20" or use_80_20_ratio was not explicitly set to True without horizons:
+    is_explicit_fixed_horizons = (
+        test_horizon_days is not None
+        and val_horizon_days is not None
+    )
+
+    if is_explicit_fixed_horizons:
+        if total_dates < (test_horizon_days + val_horizon_days + 7):
+            test_days = max(1, int(total_dates * 0.15))
+            val_days = max(1, int(total_dates * 0.15))
+        else:
+            test_days = test_horizon_days
+            val_days = val_horizon_days
+
+        test_start_idx = total_dates - test_days
+        val_start_idx = test_start_idx - val_days
+
+        train_dates = all_dates.iloc[:val_start_idx]
+        val_dates = all_dates.iloc[val_start_idx:test_start_idx]
+        test_dates = all_dates.iloc[test_start_idx:]
+
+        train_df = work_df[work_df[date_col].isin(train_dates)]
+        val_df = work_df[work_df[date_col].isin(val_dates)]
+        test_df = work_df[work_df[date_col].isin(test_dates)]
+        strategy_desc = "Strict Chronological Cutoff (Train -> Validation -> Test)"
+        split_ratio_label = "Custom Fixed Horizon"
     else:
-        test_days = test_horizon_days
-        val_days = val_horizon_days
+        # Standard Universal 80:20 chronological split
+        train_df, test_df = split_dataset_chronological_80_20(work_df, mapping=mapping, train_ratio=0.8)
+        # Validation subset within training period for hyperparameter tuning / sanity check
+        val_df = pd.DataFrame(columns=work_df.columns)
+        if len(train_df) >= 10:
+            # Carve inner 10% of training set for validation without touching test set
+            val_df, _ = split_dataset_chronological_80_20(train_df, mapping=mapping, train_ratio=0.9)
+            val_df = train_df.iloc[len(val_df):].copy()
 
-    test_start_idx = total_dates - test_days
-    val_start_idx = test_start_idx - val_days
+        train_dates = pd.Series(train_df[date_col].unique()).sort_values().reset_index(drop=True)
+        val_dates = pd.Series(val_df[date_col].unique()).sort_values().reset_index(drop=True) if len(val_df) > 0 else pd.Series(dtype="datetime64[ns]")
+        test_dates = pd.Series(test_df[date_col].unique()).sort_values().reset_index(drop=True)
 
-    train_dates = all_dates.iloc[:val_start_idx]
-    val_dates = all_dates.iloc[val_start_idx:test_start_idx]
-    test_dates = all_dates.iloc[test_start_idx:]
-
-    train_mask = work_df[date_col].isin(train_dates)
-    val_mask = work_df[date_col].isin(val_dates)
-    test_mask = work_df[date_col].isin(test_dates)
-
-    train_df = work_df[train_mask]
-    val_df = work_df[val_mask]
-    test_df = work_df[test_mask]
+        test_days = len(test_dates)
+        val_days = len(val_dates)
+        strategy_desc = "Universal 80:20 Chronological Split (Train: 80%, Test: 20%)"
+        split_ratio_label = "80:20"
 
     def fmt_date(dt_series):
         if len(dt_series) == 0:
-            return "N/A"
+            return "N/A", "N/A"
         return dt_series.iloc[0].strftime("%Y-%m-%d"), dt_series.iloc[-1].strftime("%Y-%m-%d")
 
     tr_start, tr_end = fmt_date(train_dates)
@@ -476,12 +602,15 @@ def compute_chronological_splits(
             rows_count=len(test_df),
             series_count=int(test_df[series_col].nunique()) if series_col in test_df.columns else n_series,
         ),
-        split_strategy="Strict Chronological Cutoff (Train -> Validation -> Test)",
+        split_strategy=strategy_desc,
         test_horizon_days=test_days,
         val_horizon_days=val_days,
         train_row_count=len(train_df),
         validation_row_count=len(val_df),
         test_row_count=len(test_df),
+        split_ratio=split_ratio_label,
+        train_pct=round(len(train_df) / max(1, len(work_df)) * 100, 1),
+        test_pct=round(len(test_df) / max(1, len(work_df)) * 100, 1),
     )
 
 

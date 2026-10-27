@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config.settings import settings
 from .api.endpoints import router as api_router
+from .auth.routes import router as auth_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -13,17 +14,20 @@ app = FastAPI(
     description="Universal Time-Series Dataset Engine & Ingestion API for Enterprise Forecasting"
 )
 
-# Set up CORS
+# Set up CORS with explicit origins and credentials enabled
+cors_origins = list(set(settings.BACKEND_CORS_ORIGINS + [settings.FRONTEND_ORIGIN]))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all for development & local testing
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include API Router
+# Include API Routers
 app.include_router(api_router, prefix=settings.API_V1_STR)
+app.include_router(auth_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/")

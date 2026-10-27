@@ -27,7 +27,7 @@ def detect_candidate_columns(columns: List[str]) -> Dict[str, Any]:
 
     # Mandatory
     date_col = match_alias(["date", "datetime", "timestamp", "ds", "time", "d", "observation_date"])
-    series_col = match_alias(["series_id", "series", "item_id", "id", "store_item", "unique_id", "ts_id", "sku", "sku_code", "sku_id", "product_code"])
+    series_col = match_alias(["series_id", "series", "store_item", "unique_id", "ts_id"])
     target_col = match_alias(["target", "sales", "demand", "units", "y", "quantity", "val", "value", "revenue"])
 
     # Optional canonical
@@ -67,10 +67,43 @@ def detect_candidate_columns(columns: List[str]) -> Dict[str, Any]:
         if col not in all_assigned:
             optional_mapped[f"feature_{col}"] = col
 
+    # Identify candidate entity identification columns (strictly excluding explanatory features)
+    candidate_entities: List[str] = []
+    # Known entity-identifying dimensions
+    entity_keywords = [
+        "store_id", "store", "item_id", "item", "product_id", "product", "sku_id", "sku",
+        "branch", "warehouse", "location", "category", "dept", "department", "cat",
+        "company", "org", "enterprise", "business_unit", "region", "district", "zone",
+        "market", "state", "province", "territory", "machine_id", "machine", "building_id", "building",
+        "device_id", "device", "station_id", "station", "meter_id", "meter"
+    ]
+    # Covariates to strictly exclude from entity grouping
+    covariate_exclusions = {
+        "price", "sell_price", "unit_price", "selling_price", "base_price",
+        "promotion", "promo", "discount", "is_promo", "event", "deal",
+        "holiday", "event_name", "is_holiday", "holiday_name",
+        "weather", "temperature", "temp", "precipitation", "rain",
+        "target", "sales", "demand", "units", "y", "quantity", "val", "value", "revenue",
+        "date", "datetime", "timestamp", "ds", "time", "d", "observation_date"
+    }
+
+    for col in columns:
+        clow = col.lower().strip()
+        if clow in covariate_exclusions:
+            continue
+        if col in [date_col, target_col]:
+            continue
+        if col == series_col:
+            continue
+        if any(ek in clow for ek in entity_keywords):
+            candidate_entities.append(col)
+
     return {
         "date": date_col or "",
         "series_id": series_col or "",
         "target": target_col or "",
+        "candidate_entity_columns": candidate_entities,
+        "composite_series_keys": [],
         "optional": optional_mapped,
     }
 
@@ -115,9 +148,11 @@ def save_dataset(dataset_id: str, df: pd.DataFrame, filename: str, metadata: Opt
     try:
         from ..db.mongo import MongoRepository
         csv_text = df.to_csv(index=False)
-        MongoRepository.save_dataset_record(dataset_id, meta, csv_text)
-    except Exception:
-        pass
+        saved = MongoRepository.save_dataset_record(dataset_id, meta, csv_text)
+        if not saved:
+            logger.warning(f"MongoRepository.save_dataset_record returned False for dataset_id={dataset_id}")
+    except Exception as ex:
+        logger.warning(f"Failed to persist dataset record to MongoDB for dataset_id={dataset_id}: {ex}")
 
 
 def get_dataset(dataset_id: str) -> Optional[Dict[str, Any]]:

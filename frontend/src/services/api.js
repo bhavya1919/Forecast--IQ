@@ -145,8 +145,10 @@ export async function convertM5SampleInBackend(maxSeries = 3, maxDays = 194) {
 export async function remapDatasetInBackend(datasetId, mapping) {
   const payload = {
     date: mapping.date,
-    series_id: mapping.series_id,
+    series_id: mapping.series_id || null,
     target: mapping.target,
+    composite_series_keys: mapping.composite_series_keys || [],
+    candidate_entity_columns: mapping.candidate_entity_columns || [],
     optional: mapping.optional || {}
   };
 
@@ -302,6 +304,8 @@ function formatBackendReportToUI(report, previewData, cleaningData, qualityData,
       date: mapping.date,
       series_id: mapping.series_id,
       target: mapping.target,
+      composite_series_keys: mapping.composite_series_keys || [],
+      candidate_entity_columns: mapping.candidate_entity_columns || [],
       optional: optionalList
     },
     quality: {
@@ -690,3 +694,141 @@ export async function getExplorerDataFromBackend(datasetId, options = {}, signal
 
   return await res.json();
 }
+
+// ---------------------------------------------------------------------------
+// Authentication & Session Management APIs
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a new user in the backend MongoDB repository.
+ */
+export async function registerUserInBackend(fullName, email, password) {
+  const payload = {
+    full_name: fullName.trim(),
+    email: email.trim().toLowerCase(),
+    password: password
+  };
+
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    try {
+      res = await fetch(`http://localhost:8000/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload)
+      });
+    } catch {
+      throw new Error('Backend Service Unavailable: Could not reach authentication server.');
+    }
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || `Registration failed with HTTP ${res.status}`);
+  }
+
+  return data;
+}
+
+/**
+ * Login with email and password, establishing an authenticated session.
+ */
+export async function loginUserInBackend(email, password) {
+  const payload = {
+    email: email.trim().toLowerCase(),
+    password: password
+  };
+
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    try {
+      res = await fetch(`http://localhost:8000/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload)
+      });
+    } catch {
+      throw new Error('Backend Service Unavailable: Could not reach authentication server.');
+    }
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || `Login failed with HTTP ${res.status}`);
+  }
+
+  return data;
+}
+
+/**
+ * Retrieve the current authenticated user's profile using the session cookie.
+ */
+export async function getCurrentUserFromBackend() {
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/auth/me`, {
+      method: 'GET',
+      credentials: 'include'
+    });
+  } catch {
+    try {
+      res = await fetch(`http://localhost:8000/api/auth/me`, {
+        method: 'GET',
+        credentials: 'include'
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  if (!res || !res.ok) {
+    return null;
+  }
+
+  return await res.json();
+}
+
+/**
+ * Invalidate the active session on the backend and clear session cookies.
+ */
+export async function logoutUserInBackend() {
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/auth/logout`, {
+      method: 'POST',
+      credentials: 'include'
+    });
+  } catch {
+    try {
+      res = await fetch(`http://localhost:8000/api/auth/logout`, {
+        method: 'POST',
+        credentials: 'include'
+      });
+    } catch {
+      return { success: true };
+    }
+  }
+
+  if (!res || !res.ok) {
+    return { success: true };
+  }
+
+  return await res.json();
+}
+

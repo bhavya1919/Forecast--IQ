@@ -8,10 +8,13 @@ import GenerateForecastPage from './pages/GenerateForecastPage';
 import ModelComparisonPage from './pages/ModelComparisonPage';
 import EvaluationPage from './pages/EvaluationPage';
 import BusinessInsightsPage from './pages/BusinessInsightsPage';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
+import { AuthProvider } from './context/AuthContext';
 import { restoreDatasetFromBackend } from './services/api';
 import { AlertCircle, RefreshCw, RotateCcw } from 'lucide-react';
 
-const VALID_TABS = ['home', 'explorer', 'upload', 'forecast', 'comparison', 'evaluation', 'insights'];
+const VALID_TABS = ['home', 'explorer', 'upload', 'forecast', 'comparison', 'evaluation', 'insights', 'login', 'register'];
 const STORAGE_ROUTE_KEY = 'forecastiq_active_tab';
 const STORAGE_DATASET_ID_KEY = 'forecastiq_active_dataset_id';
 const STORAGE_DATASET_META_KEY = 'forecastiq_active_dataset_meta';
@@ -42,7 +45,7 @@ function getStoredDatasetMeta() {
   return null;
 }
 
-export default function App() {
+function AppContent() {
   const [activeTab, setActiveTabState] = useState(getInitialTab);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [uploadedDataset, setUploadedDatasetState] = useState(getStoredDatasetMeta);
@@ -187,6 +190,10 @@ export default function App() {
             uploadedDataset={uploadedDataset} 
           />
         );
+      case 'login':
+        return <LoginPage onNavigate={setActiveTab} />;
+      case 'register':
+        return <RegisterPage onNavigate={setActiveTab} />;
       default:
         return <HomePage onNavigate={setActiveTab} />;
     }
@@ -212,6 +219,7 @@ export default function App() {
           uploadedDataset={uploadedDataset}
           isRestoringDataset={isRestoringDataset}
           restorationError={restorationError}
+          onNavigate={setActiveTab}
         />
 
         {/* Page Content Container with generous padding */}
@@ -274,3 +282,12 @@ export default function App() {
     </div>
   );
 }
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
+}
+

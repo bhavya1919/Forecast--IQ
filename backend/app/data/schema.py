@@ -29,11 +29,11 @@ class CanonicalField(str, Enum):
 
 MANDATORY_CANONICAL_FIELDS = [
     CanonicalField.DATE.value,
-    CanonicalField.SERIES_ID.value,
     CanonicalField.TARGET.value,
 ]
 
 OPTIONAL_CANONICAL_FIELDS = [
+    CanonicalField.SERIES_ID.value,
     CanonicalField.STORE_ID.value,
     CanonicalField.ITEM_ID.value,
     CanonicalField.CATEGORY.value,
@@ -82,8 +82,10 @@ class ColumnFeatureProfile(BaseModel):
 
 class ColumnMapping(BaseModel):
     date: str
-    series_id: str
+    series_id: Optional[str] = None
     target: str
+    composite_series_keys: Optional[List[str]] = Field(default_factory=list)
+    candidate_entity_columns: Optional[List[str]] = Field(default_factory=list)
     optional: Dict[str, str] = Field(default_factory=dict)
 
 
@@ -288,12 +290,17 @@ class SplitReport(BaseModel):
     train_row_count: int = 0
     validation_row_count: int = 0
     test_row_count: int = 0
+    split_ratio: str = "80:20"
+    train_pct: float = 80.0
+    test_pct: float = 20.0
 
 
 class CleanDatasetRequest(BaseModel):
     additive_aggregation: bool = True  # If True, SUM additive targets for identical series+date
     target_type: Optional[str] = "additive"  # 'additive' or 'non-additive'
     impute_optional_features: bool = True
+    series_id: Optional[str] = None
+    composite_series_keys: Optional[List[str]] = None
 
 
 class UploadResponse(BaseModel):

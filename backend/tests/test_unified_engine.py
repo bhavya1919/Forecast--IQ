@@ -395,3 +395,27 @@ def test_api_unified_generate_endpoint_integration():
     assert data["forecast_horizon"] == 28
     assert len(data["forecast"]) == 28
     assert len(data["points"]) == 28
+
+
+# 17. Single series forecasting when series_id was omitted at upload
+def test_forecast_single_series_omitted_series_id():
+    dates = pd.date_range("2024-01-01", periods=60, freq="D")
+    df = pd.DataFrame({
+        "date": dates.strftime("%Y-%m-%d"),
+        "target": np.linspace(10, 50, 60)
+    })
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    upload_res = client.post("/api/data/upload", files={"file": ("single_series_api.csv", io.BytesIO(csv_bytes), "text/csv")})
+    dataset_id = upload_res.json()["dataset_id"]
+
+    # Generate forecast without specifying series_id or with default_series
+    payload = {
+        "dataset_id": dataset_id,
+        "horizon": 7,
+        "model": "arima"
+    }
+    res = client.post("/api/forecast/generate", json=payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["series_id"] == "default_series"
+    assert len(data["forecast"]) == 7

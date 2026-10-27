@@ -92,6 +92,8 @@ export default function GenerateForecastPage({ onNavigate, uploadedDataset = nul
   // Forecast configuration state
   const [horizonDays, setHorizonDays] = useState(28);
   const [modelId, setModelId] = useState('arima');
+  const [recommendedModel, setRecommendedModel] = useState(null);
+  const [recommendationReason, setRecommendationReason] = useState(null);
   const [forecastError, setForecastError] = useState(null);
 
   // Generation execution state
@@ -202,6 +204,57 @@ export default function GenerateForecastPage({ onNavigate, uploadedDataset = nul
       isMounted = false;
     };
   }, [uploadedDataset?.dataset_id]);
+
+  // Query empirical evaluation results to automatically recommend the winning model
+  useEffect(() => {
+    let isCancelled = false;
+    if (!uploadedDataset?.dataset_id) {
+      setRecommendedModel(null);
+      setRecommendationReason(null);
+      return;
+    }
+
+    try {
+      const p = getEvaluationComparisonFromBackend?.(uploadedDataset.dataset_id, {
+        series_id: selectedSeries || undefined,
+        store_id: selectedStore || undefined,
+      });
+      if (p && typeof p.then === 'function') {
+        p.then((evalData) => {
+          if (isCancelled || !evalData) return;
+          const hKey = `${horizonDays}D`;
+          const bestObj = evalData.best_per_horizon?.[hKey];
+          if (bestObj && bestObj.best_model) {
+            const winModel = bestObj.best_model.toLowerCase();
+            setRecommendedModel(winModel);
+            setRecommendationReason(
+              `Recommended from Step 2 Backtesting: ${winModel.toUpperCase()} achieved lowest ${hKey} error (${bestObj.mape}% MAPE, ${bestObj.rmse} RMSE).`
+            );
+          } else if (evalData.best_model_overall?.model) {
+            const overallModel = evalData.best_model_overall.model.toLowerCase();
+            setRecommendedModel(overallModel);
+            setRecommendationReason(
+              `Recommended from Step 2 Backtesting: ${overallModel.toUpperCase()} achieved best overall error (${evalData.best_model_overall.overall_mape}% MAPE across evaluated horizons).`
+            );
+          } else {
+            setRecommendedModel(null);
+            setRecommendationReason(null);
+          }
+        }).catch(() => {
+          if (!isCancelled) {
+            setRecommendedModel(null);
+            setRecommendationReason(null);
+          }
+        });
+      }
+    } catch {
+      // Ignore evaluation recommendation errors if offline or unmocked
+    }
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [uploadedDataset?.dataset_id, selectedSeries, horizonDays, selectedStore]);
 
   // ---------------------------------------------------------------------------
   // Cascading handler: Store change clears incompatible series
@@ -763,27 +816,49 @@ export default function GenerateForecastPage({ onNavigate, uploadedDataset = nul
 
             {/* Step 4: Select Model (6 Core Architectures) */}
             <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <span className="w-5 h-5 rounded-full bg-[#A294F9] text-white text-[11px] font-bold flex items-center justify-center">
-                  4
-                </span>
-                <label className="text-sm font-bold font-heading text-[#1F1B2C]">
-                  Select Model
-                </label>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-[#A294F9] text-white text-[11px] font-bold flex items-center justify-center">
+                    4
+                  </span>
+                  <label className="text-sm font-bold font-heading text-[#1F1B2C]">
+                    Select Model
+                  </label>
+                </div>
+                {recommendedModel && (
+                  <button
+                    type="button"
+                    onClick={() => setModelId(recommendedModel)}
+                    className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 hover:bg-emerald-200 transition-colors flex items-center gap-1.5"
+                    data-testid="use-recommended-model-btn"
+                  >
+                    <span>★ Use Recommended: {recommendedModel.toUpperCase()}</span>
+                  </button>
+                )}
               </div>
+
+              {recommendationReason && (
+                <div className="p-3 rounded-xl bg-emerald-50/70 border border-emerald-200 text-emerald-900 text-[11px] flex items-center gap-2">
+                  <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{recommendationReason}</span>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
                 {CORE_MODELS.map((m) => {
                   const isSelected = modelId === m.id;
+                  const isRecommended = recommendedModel === m.id;
                   return (
                     <div
                       key={m.id}
                       onClick={() => setModelId(m.id)}
                       className={`
-                        p-4 rounded-2xl border cursor-pointer transition-all flex flex-col justify-between
+                        p-4 rounded-2xl border cursor-pointer transition-all flex flex-col justify-between relative
                         ${isSelected 
                           ? 'bg-[#F5EFFF] border-[#A294F9] shadow-sm ring-1 ring-[#A294F9]' 
-                          : 'bg-white border-[#E5D9F2] hover:border-[#CDC1FF]'
+                          : isRecommended
+                            ? 'bg-emerald-50/40 border-emerald-300 hover:border-emerald-400'
+                            : 'bg-white border-[#E5D9F2] hover:border-[#CDC1FF]'
                         }
                       `}
                     >
@@ -792,11 +867,18 @@ export default function GenerateForecastPage({ onNavigate, uploadedDataset = nul
                           <span className="text-[10px] uppercase font-bold tracking-wider text-[#8E83A3]">
                             {m.type}
                           </span>
-                          {isSelected && (
-                            <span className="w-4 h-4 rounded-full bg-[#A294F9] text-white flex items-center justify-center">
-                              <Check className="w-2.5 h-2.5" />
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1.5">
+                            {isRecommended && (
+                              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-200 text-emerald-900 tracking-wider">
+                                Best Model
+                              </span>
+                            )}
+                            {isSelected && (
+                              <span className="w-4 h-4 rounded-full bg-[#A294F9] text-white flex items-center justify-center">
+                                <Check className="w-2.5 h-2.5" />
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         <div className="text-sm font-bold font-heading text-[#1F1B2C]">
@@ -1018,23 +1100,30 @@ export default function GenerateForecastPage({ onNavigate, uploadedDataset = nul
             </div>
           </div>
 
-          {/* Action Links */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 rounded-2xl bg-white border border-[#E5D9F2]">
-            <div className="text-xs text-[#5F5670]">
-              Want to see how this prediction compares against other models or how to use it for inventory?
+          {/* Action Links: Step 3 -> Step 4 */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-5 rounded-2xl bg-white border border-[#E5D9F2] shadow-xs">
+            <div>
+              <div className="text-xs font-bold text-[#1F1B2C]">
+                Step 3 Completed: Forecast Generated
+              </div>
+              <div className="text-xs text-[#5F5670] mt-0.5">
+                Proceed to compare cross-model performance benchmarks and historical consistency across horizons.
+              </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 shrink-0">
               <button
                 onClick={() => onNavigate('comparison')}
-                className="px-4 py-2 rounded-xl bg-[#F5EFFF] text-[#1F1B2C] hover:bg-[#E5D9F2] border border-[#CDC1FF] text-xs font-semibold transition-colors"
+                className="px-5 py-2.5 rounded-xl bg-[#A294F9] text-white hover:bg-[#9181f7] text-xs font-semibold transition-colors shadow-xs flex items-center gap-1.5"
+                data-testid="continue-to-comparison-btn"
               >
-                Compare Models →
+                <span>Proceed to Model Comparison (Step 4) →</span>
               </button>
               <button
                 onClick={() => onNavigate('insights')}
-                className="px-4 py-2 rounded-xl bg-[#A294F9] text-white hover:bg-[#9181f7] text-xs font-semibold transition-colors"
+                className="px-4 py-2.5 rounded-xl bg-[#F5EFFF] text-[#1F1B2C] hover:bg-[#E5D9F2] border border-[#CDC1FF] text-xs font-semibold transition-colors"
+                data-testid="view-insights-btn"
               >
-                View Business Insights →
+                Business Insights
               </button>
             </div>
           </div>

@@ -68,12 +68,12 @@ describe('GenerateForecastPage Real Dataset Integration', () => {
     render(<GenerateForecastPage onNavigate={vi.fn()} uploadedDataset={mockActiveDataset} />);
 
     await waitFor(() => {
-      expect(screen.getByLabelText(/Select Store/i)).toBeInTheDocument();
+      const storeSelect = screen.getByLabelText(/Select Store/i);
+      expect(storeSelect).toHaveValue('CA_1');
     });
 
     // Check Store options contain CA_1, CA_2, CA_3
     const storeSelect = screen.getByLabelText(/Select Store/i);
-    expect(storeSelect).toHaveValue('CA_1');
     expect(screen.getByRole('option', { name: 'CA_1' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'CA_2' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'CA_3' })).toBeInTheDocument();

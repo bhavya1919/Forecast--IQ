@@ -52,18 +52,20 @@ export default function HomePage({ onNavigate }) {
 
             <div className="flex flex-wrap items-center gap-3 pt-2">
               <button
-                onClick={() => onNavigate('forecast')}
+                onClick={() => onNavigate('upload')}
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#A294F9] text-white font-semibold text-sm hover:bg-[#9181f7] shadow-sm hover:shadow transition-all"
+                data-testid="hero-start-workflow-btn"
               >
-                <span>Generate Forecast</span>
+                <span>Start Forecasting Workflow →</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
 
               <button
-                onClick={() => onNavigate('explorer')}
+                onClick={() => onNavigate('forecast')}
                 className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-[#F5EFFF] text-[#1F1B2C] font-semibold text-sm hover:bg-[#E5D9F2] border border-[#CDC1FF] transition-all"
+                data-testid="hero-generate-forecast-btn"
               >
-                <span>Explore Data</span>
+                <span>Generate Forecast</span>
               </button>
             </div>
           </div>

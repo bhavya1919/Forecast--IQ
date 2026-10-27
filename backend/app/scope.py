@@ -153,7 +153,10 @@ def resolve_series_id(
     )
     series_col = cols["series_id"]
     if series_col is None or series_col not in scoped.columns:
-        raise ValueError("Dataset does not contain a series_id column.")
+        # If dataset is clean single-series, return default_series
+        if "series_id" in scoped.columns:
+            return str(scoped["series_id"].iloc[0])
+        return "default_series"
     if series_id and not scoped.empty:
         return str(series_id)
     if series_id:

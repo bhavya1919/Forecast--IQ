@@ -16,7 +16,8 @@ import {
   getExplorerDataFromBackend
 } from '../services/api';
 
-export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
+export default function ModelComparisonPage({ onNavigate, _onNavigate, uploadedDataset }) {
+  const navigate = onNavigate || _onNavigate;
   const [filterHorizon, setFilterHorizon] = useState('all'); // all, 7d, 28d, 90d
   const [filterStore, setFilterStore] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
@@ -1008,6 +1009,20 @@ export default function ModelComparisonPage({ _onNavigate, uploadedDataset }) {
           <strong> LightGBM</strong> offers exceptional tabular throughput with rich lag features; and 
           <strong> Temporal Fusion Transformer (TFT)</strong> demonstrates superior multi-step horizon consistency for complex seasonal patterns with external price and holiday covariates.
         </p>
+
+        {/* Workflow Progression: Step 4 -> Business Insights */}
+        <div className="pt-3 border-t border-[#E5D9F2] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="text-xs text-[#5F5670]">
+            Step 4 Completed: Model Comparison verified across compatible horizons.
+          </div>
+          <button
+            onClick={() => navigate && navigate('insights')}
+            className="px-5 py-2.5 rounded-xl bg-[#A294F9] text-white hover:bg-[#9181f7] text-xs font-semibold transition-colors shadow-xs flex items-center gap-1.5 self-start sm:self-auto"
+            data-testid="continue-to-insights-btn"
+          >
+            <span>Explore Business Insights & Monitoring →</span>
+          </button>
+        </div>
       </section>
     </div>
   );

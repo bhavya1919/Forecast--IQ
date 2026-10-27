@@ -82,6 +82,22 @@ NOT_A_DATE,SERIES_1,100
     expect(analysis.quality.negativeTargetCount).toBe(1);
     expect(analysis.quality.overallStatus).toBe('NEEDS ATTENTION');
   });
+
+  it('supports CSV with only date and target without requiring series_id', () => {
+    const univariateCSV = `date,target
+2024-01-01,100
+2024-01-02,120
+2024-01-03,115`;
+    const parsed = parseCSV(univariateCSV);
+    const mapping = detectColumnMappings(parsed.headers);
+    expect(mapping.date).toBe('date');
+    expect(mapping.target).toBe('target');
+    expect(mapping.series_id).toBe('');
+
+    // analyzeDataset allows single-series without series_id
+    const analysis = analyzeDataset('univariate.csv', parsed, mapping);
+    expect(analysis.profile.rowsCount).toBe(3);
+  });
 });
 
 describe('UploadDatasetPage UI Component', () => {

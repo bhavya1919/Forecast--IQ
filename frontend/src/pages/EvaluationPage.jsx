@@ -8,7 +8,8 @@ import {
   CheckCircle2,
   Clock,
   Layers,
-  BarChart3
+  BarChart3,
+  ArrowRight
 } from 'lucide-react';
 import { getEvaluationFromBackend, runBacktestInBackend } from '../services/api';
 
@@ -89,7 +90,8 @@ function getFoldVisualizationData(uploadedDataset, evalData, horizon = 28, nFold
   ];
 }
 
-export default function EvaluationPage({ _onNavigate, uploadedDataset }) {
+export default function EvaluationPage({ onNavigate, _onNavigate, uploadedDataset }) {
+  const navigate = onNavigate || _onNavigate;
   const [evalData, setEvalData] = useState(null);
   const [isBacktesting, setIsBacktesting] = useState(false);
   const [backtestError, setBacktestError] = useState(null);
@@ -606,6 +608,26 @@ export default function EvaluationPage({ _onNavigate, uploadedDataset }) {
             </div>
           </div>
         )}
+
+        {/* Workflow Progression: Step 2 -> Step 3 (Generate Forecast) */}
+        <div className="p-5 rounded-2xl bg-white border border-[#E5D9F2] shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 mt-6">
+          <div>
+            <div className="text-xs font-bold text-[#1F1B2C]">
+              Step 2 Completed: Evaluation & Backtesting
+            </div>
+            <p className="text-xs text-[#5F5670] mt-0.5">
+              Proceed to generate out-of-sample forward demand forecasts using evaluated models.
+            </p>
+          </div>
+          <button
+            onClick={() => navigate && navigate('forecast')}
+            className="px-5 py-2.5 rounded-xl bg-[#A294F9] text-white hover:bg-[#9181f7] text-xs font-semibold transition-colors shadow-xs flex items-center gap-2 shrink-0"
+            data-testid="continue-to-forecast-step-btn"
+          >
+            <span>Proceed to Generate Forecast (Step 3)</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </section>
     </div>
   );

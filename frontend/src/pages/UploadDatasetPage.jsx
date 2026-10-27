@@ -26,7 +26,8 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
   const [customMapping, setCustomMapping] = useState({
     date: uploadedDataset?.mapping?.date || '',
     series_id: uploadedDataset?.mapping?.series_id || '',
-    target: uploadedDataset?.mapping?.target || ''
+    target: uploadedDataset?.mapping?.target || '',
+    composite_series_keys: uploadedDataset?.mapping?.composite_series_keys || []
   });
 
   const fileInputRef = useRef(null);
@@ -39,7 +40,8 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
         setCustomMapping({
           date: uploadedDataset.mapping.date || '',
           series_id: uploadedDataset.mapping.series_id || '',
-          target: uploadedDataset.mapping.target || ''
+          target: uploadedDataset.mapping.target || '',
+          composite_series_keys: uploadedDataset.mapping.composite_series_keys || []
         });
       }
     }
@@ -114,6 +116,10 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
   // Re-run analysis when user changes mapping manually in backend
   const handleMappingChange = async (field, newCol) => {
     const nextMapping = { ...customMapping, [field]: newCol };
+    // If user explicitly maps a direct series_id column, clear composite keys
+    if (field === 'series_id' && newCol) {
+      nextMapping.composite_series_keys = [];
+    }
     setCustomMapping(nextMapping);
 
     if (analysis?.dataset_id) {
@@ -126,6 +132,33 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
         if (onDatasetReady) onDatasetReady(updated);
       } catch (err) {
         setUploadError(err.message || 'Remapping failed on backend.');
+      }
+    }
+  };
+
+  const handleToggleCompositeKey = async (colName) => {
+    const currentKeys = customMapping.composite_series_keys || [];
+    const nextKeys = currentKeys.includes(colName)
+      ? currentKeys.filter(k => k !== colName)
+      : [...currentKeys, colName];
+
+    const nextMapping = {
+      ...customMapping,
+      series_id: '',
+      composite_series_keys: nextKeys
+    };
+    setCustomMapping(nextMapping);
+
+    if (analysis?.dataset_id) {
+      try {
+        const updated = await remapDatasetInBackend(analysis.dataset_id, nextMapping);
+        setAnalysis(prev => ({
+          ...updated,
+          previewRows: prev.previewRows
+        }));
+        if (onDatasetReady) onDatasetReady(updated);
+      } catch (err) {
+        setUploadError(err.message || 'Failed to update composite identifier mapping.');
       }
     }
   };
@@ -198,16 +231,19 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
               </span>
             </div>
             <p className="text-xs text-[#5F5670]">
-              Every custom dataset requires only three mandatory fields. All other business dimensions are automatically treated as optional covariates.
+              Every custom dataset requires only two mandatory fields: date and target. Series identifiers are optional for single series or can be derived from composite entity columns.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="px-3 py-1 rounded-lg bg-[#F5EFFF] text-[#1F1B2C] border border-[#CDC1FF] font-semibold">
-              Mandatory: <span className="font-mono text-[#A294F9]">date</span>, <span className="font-mono text-[#A294F9]">series_id</span>, <span className="font-mono text-[#A294F9]">target</span>
+              Mandatory: <span className="font-mono text-[#A294F9]">date</span>, <span className="font-mono text-[#A294F9]">target</span>
+            </span>
+            <span className="px-3 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium">
+              Optional / Auto-resolved: <span className="font-mono text-emerald-700">series_id</span> (or composite keys)
             </span>
             <span className="px-3 py-1 rounded-lg bg-gray-50 text-[#5F5670] border border-gray-200">
-              Optional: store_id, item_id, category, price, promo, etc.
+              Covariates: store_id, item_id, category, price, promo, etc.
             </span>
           </div>
         </div>
@@ -412,11 +448,11 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
               </button>
 
               <button
-                onClick={() => onNavigate('forecast')}
+                onClick={() => onNavigate('evaluation')}
                 className="px-5 py-2 rounded-xl bg-[#A294F9] text-white hover:bg-[#9181f7] text-xs font-semibold transition-colors shadow-xs flex items-center gap-1.5"
-                data-testid="continue-to-forecast-btn"
+                data-testid="continue-to-evaluation-btn"
               >
-                <span>Continue to Forecast</span>
+                <span>Continue to Evaluation & Backtesting →</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -522,11 +558,11 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
                 </div>
               </div>
 
-              {/* Series ID */}
+              {/* Series ID (Optional) */}
               <div className="space-y-1.5">
                 <label className="flex items-center justify-between text-xs font-bold text-[#1F1B2C]">
-                  <span>Mandatory Series ID Column:</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#A294F9] text-white">Required</span>
+                  <span>Series ID Column:</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold">Optional</span>
                 </label>
                 <select
                   value={customMapping.series_id}
@@ -534,13 +570,13 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
                   className="w-full bg-white border border-[#CDC1FF] rounded-xl px-3 py-2 text-xs font-semibold text-[#1F1B2C] outline-none"
                   data-testid="map-series-select"
                 >
-                  <option value="">-- Select Series ID Column --</option>
+                  <option value="">-- None (Single-Series: default_series) --</option>
                   {(analysis.profile?.headers || []).map(h => (
                     <option key={h} value={h}>{h}</option>
                   ))}
                 </select>
                 <div className="text-[10px] text-[#5F5670]">
-                  Individual series identifier (e.g. store_item, branch_sku).
+                  Leave empty if CSV contains only 1 series. Will use internal <span className="font-mono text-purple-700">default_series</span>.
                 </div>
               </div>
 
@@ -566,6 +602,56 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
                 </div>
               </div>
             </div>
+
+            {/* Candidate Entity Columns & User-Confirmed Composite Identifier */}
+            {((analysis.mapping?.candidate_entity_columns || []).length > 0 || (customMapping.composite_series_keys || []).length > 0) && (
+              <div className="p-4 rounded-2xl bg-[#F5EFFF]/70 border border-[#CDC1FF] space-y-3" data-testid="composite-keys-section">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="space-y-0.5">
+                    <div className="text-xs font-bold text-[#1F1B2C] flex items-center gap-1.5">
+                      <span>Composite Series Identifier Auto-Detection</span>
+                      <span className="text-[10px] bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full font-semibold">
+                        Entity Dimensions
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-[#5F5670]">
+                      Multiple entity columns were detected (excluding explanatory covariates like price/promo). Confirm which columns distinguish separate time series (e.g. <span className="font-mono text-purple-700">store_id + item_id</span>):
+                    </p>
+                  </div>
+
+                  {(customMapping.composite_series_keys || []).length > 0 && (
+                    <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 shrink-0">
+                      Composite Key Active: {customMapping.composite_series_keys.join(' + ')}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {Array.from(new Set([
+                    ...(analysis.mapping?.candidate_entity_columns || []),
+                    ...(customMapping.composite_series_keys || [])
+                  ])).map((col) => {
+                    const isSelected = (customMapping.composite_series_keys || []).includes(col);
+                    return (
+                      <button
+                        key={col}
+                        type="button"
+                        onClick={() => handleToggleCompositeKey(col)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 border ${
+                          isSelected
+                            ? 'bg-[#A294F9] text-white border-[#A294F9] shadow-xs'
+                            : 'bg-white text-[#1F1B2C] border-[#CDC1FF] hover:border-[#A294F9]'
+                        }`}
+                        data-testid={`composite-col-${col}`}
+                      >
+                        <span className="font-mono">{col}</span>
+                        {isSelected ? <Check className="w-3 h-3 text-white" /> : <span className="text-[10px] text-gray-400">+ Add</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Optional Detected Columns Section */}
             <div>
@@ -733,6 +819,11 @@ export default function UploadDatasetPage({ onNavigate, onDatasetReady, uploaded
                     Chronological Train / Validation / Test Temporal Splits:
                   </div>
                   <div className="flex items-center gap-2">
+                    {analysis.splits.split_ratio && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800" data-testid="split-ratio-badge">
+                        Split: {analysis.splits.split_ratio}
+                      </span>
+                    )}
                     <span className="text-[10px] font-semibold text-[#8E83A3]">
                       {analysis.splits.split_strategy}
                     </span>

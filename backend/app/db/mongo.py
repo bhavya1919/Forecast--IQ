@@ -36,13 +36,14 @@ class MongoManager:
         if not settings.MONGODB_ENABLED:
             return None
 
-        if cls._client is None:
+        # Re-check or attempt connection if not yet connected
+        if cls._client is None or not cls._connected:
             try:
-                # Fast timeout (2s) so local development without mongo doesn't hang
+                # 5s timeout is optimal for remote Atlas clusters while failing fast if offline
                 cls._client = MongoClient(
                     settings.MONGODB_URI,
-                    serverSelectionTimeoutMS=2000,
-                    connectTimeoutMS=2000
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=5000
                 )
                 # Check connection
                 cls._client.admin.command('ping')
@@ -112,6 +113,14 @@ class MongoManager:
             cls._db.monitoring_reports.create_index([
                 ("dataset_id", ASCENDING)
             ], unique=True)
+
+            # 7. users: normalized email unique
+            cls._db.users.create_index([("email", ASCENDING)], unique=True)
+
+            # 8. sessions: session_token_hash unique, and expires_at for indexing
+            cls._db.sessions.create_index([("session_token_hash", ASCENDING)], unique=True)
+            cls._db.sessions.create_index([("user_id", ASCENDING)])
+            cls._db.sessions.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
 
             cls._initialized_indexes = True
             logger.info("MongoDB indexes successfully created and verified.")
@@ -348,3 +357,103 @@ class MongoRepository:
         except Exception as e:
             logger.warning(f"Error getting monitoring report from MongoDB: {e}")
             return None
+
+    # ---------------------------------------------------------------------------
+    # Authentication & User Management Repository Methods
+    # ---------------------------------------------------------------------------
+    @staticmethod
+    def create_user(user_doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert a new user document into the users collection."""
+        db = MongoManager.get_db()
+        if db is None:
+            raise ConnectionFailure("MongoDB is offline or unreachable.")
+        
+        now = datetime.utcnow()
+        doc = {
+            **user_doc,
+            "created_at": user_doc.get("created_at") or now,
+            "updated_at": user_doc.get("updated_at") or now,
+            "is_active": user_doc.get("is_active", True),
+        }
+        res = db.users.insert_one(doc)
+        doc["_id"] = str(res.inserted_id)
+        return doc
+
+    @staticmethod
+    def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a user by normalized email."""
+        db = MongoManager.get_db()
+        if db is None:
+            raise ConnectionFailure("MongoDB is offline or unreachable.")
+        
+        normalized = email.strip().lower()
+        user = db.users.find_one({"email": normalized})
+        if user:
+            user["_id"] = str(user["_id"])
+        return user
+
+    @staticmethod
+    def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a user by user_id string or ObjectId."""
+        from bson import ObjectId
+        db = MongoManager.get_db()
+        if db is None:
+            raise ConnectionFailure("MongoDB is offline or unreachable.")
+        
+        query = {"$or": [{"user_id": user_id}]}
+        if ObjectId.is_valid(user_id):
+            query["$or"].append({"_id": ObjectId(user_id)})
+        
+        user = db.users.find_one(query)
+        if user:
+            user["_id"] = str(user["_id"])
+        return user
+
+    @staticmethod
+    def create_session(session_token_hash: str, user_id: str, email: str, expires_at: datetime) -> bool:
+        """Store a hashed session token in the sessions collection."""
+        db = MongoManager.get_db()
+        if db is None:
+            raise ConnectionFailure("MongoDB is offline or unreachable.")
+        
+        now = datetime.utcnow()
+        doc = {
+            "session_token_hash": session_token_hash,
+            "user_id": user_id,
+            "email": email.strip().lower(),
+            "created_at": now,
+            "expires_at": expires_at
+        }
+        db.sessions.update_one(
+            {"session_token_hash": session_token_hash},
+            {"$set": doc},
+            upsert=True
+        )
+        return True
+
+    @staticmethod
+    def get_session(session_token_hash: str) -> Optional[Dict[str, Any]]:
+        """Retrieve an active, non-expired session."""
+        db = MongoManager.get_db()
+        if db is None:
+            raise ConnectionFailure("MongoDB is offline or unreachable.")
+        
+        now = datetime.utcnow()
+        session = db.sessions.find_one({
+            "session_token_hash": session_token_hash,
+            "expires_at": {"$gt": now}
+        })
+        if session:
+            session["_id"] = str(session["_id"])
+        return session
+
+    @staticmethod
+    def delete_session(session_token_hash: str) -> bool:
+        """Delete/invalidate a session token."""
+        db = MongoManager.get_db()
+        if db is None:
+            raise ConnectionFailure("MongoDB is offline or unreachable.")
+        
+        db.sessions.delete_one({"session_token_hash": session_token_hash})
+        return True
+

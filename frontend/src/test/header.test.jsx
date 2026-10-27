@@ -2,10 +2,14 @@ import React from 'react';
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import Header from '../components/Header';
+import { AuthProvider } from '../context/AuthContext';
+
+const renderWithAuth = (ui) => render(<AuthProvider>{ui}</AuthProvider>);
 
 describe('Header Dataset Cutoff Dynamics', () => {
   it('renders default M5 benchmark cutoff when no dataset is active', () => {
-    render(<Header activeTab="home" onMobileToggle={() => {}} uploadedDataset={null} />);
+    renderWithAuth(<Header activeTab="home" onMobileToggle={() => {}} uploadedDataset={null} />);
+
     
     const badge = screen.getByTestId('header-cutoff-badge');
     expect(badge).toBeInTheDocument();
@@ -14,7 +18,7 @@ describe('Header Dataset Cutoff Dynamics', () => {
   });
 
   it('renders resolving state when dataset is actively restoring', () => {
-    render(
+    renderWithAuth(
       <Header 
         activeTab="home" 
         onMobileToggle={() => {}} 
@@ -31,12 +35,12 @@ describe('Header Dataset Cutoff Dynamics', () => {
   });
 
   it('renders unavailable state when dataset restoration encountered an error', () => {
-    render(
+    renderWithAuth(
       <Header 
         activeTab="home" 
         onMobileToggle={() => {}} 
         uploadedDataset={null} 
-        isRestoringDataset={false}
+        isRestoringDataset={false} 
         restorationError="Network timeout reconnecting to persistence engine"
       />
     );
@@ -59,7 +63,7 @@ describe('Header Dataset Cutoff Dynamics', () => {
       }
     };
 
-    render(
+    renderWithAuth(
       <Header 
         activeTab="explorer" 
         onMobileToggle={() => {}} 
@@ -85,14 +89,32 @@ describe('Header Dataset Cutoff Dynamics', () => {
     };
 
     const { rerender } = render(
-      <Header activeTab="home" onMobileToggle={() => {}} uploadedDataset={datasetA} />
+      <AuthProvider>
+        <Header activeTab="home" onMobileToggle={() => {}} uploadedDataset={datasetA} />
+      </AuthProvider>
     );
     expect(screen.getByTestId('header-cutoff-badge')).toHaveTextContent(/2024-12-31/i);
 
     rerender(
-      <Header activeTab="home" onMobileToggle={() => {}} uploadedDataset={datasetB} />
+      <AuthProvider>
+        <Header activeTab="home" onMobileToggle={() => {}} uploadedDataset={datasetB} />
+      </AuthProvider>
     );
     expect(screen.getByTestId('header-cutoff-badge')).toHaveTextContent(/2025-11-08/i);
     expect(screen.getByTestId('header-cutoff-badge')).not.toHaveTextContent(/2024-12-31/i);
   });
+
+  it('renders Login and Register buttons when user is logged out', () => {
+    render(
+      <AuthProvider>
+        <Header activeTab="home" onMobileToggle={() => {}} uploadedDataset={null} />
+      </AuthProvider>
+    );
+
+    expect(screen.getByTestId('header-login-button')).toBeInTheDocument();
+    expect(screen.getByTestId('header-register-button')).toBeInTheDocument();
+    expect(screen.getByText(/Sign In/i)).toBeInTheDocument();
+    expect(screen.getByText(/Register/i)).toBeInTheDocument();
+  });
 });
+
